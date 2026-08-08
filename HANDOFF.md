@@ -189,6 +189,13 @@ Kept for a possible future "precise layout" mode. Do not assume they run.
   titles. A 1D trace always gets its own panel (intensity cannot share a ppm
   vertical axis).
 
+### Y offset (stacked)
+- **Offset is a pure translation. It must NEVER clear _y_limits.** Re-fitting
+  the frame on an offset change rescales the whole view, so moving one trace
+  resizes all of them. The lane frame already reserves offset headroom; trust
+  it. This has now been the wrong-then-right fix twice -- do not "re-fit to
+  keep the trace visible" a third time.
+
 ### Stacked mode
 - **The lane step is REMEMBERED (`_stack_step`), not recomputed per redraw.**
   Deriving it from the tallest scaled span each time meant scaling one

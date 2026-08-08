@@ -571,15 +571,13 @@ class SpectrumCanvas(QWidget):
             return
         self.push_undo(("offset", index))
         self._traces[index].y_offset = float(offset)
-        # In stacked mode the frame is built from the drawn lane positions,
-        # which include each trace's offset. Moving a trace therefore changes
-        # what the frame must cover -- so the frame has to be recomputed, or a
-        # nudged trace slides straight out of a frame that no longer fits it.
-        # That was the reported "peak disappeared": the trace moved, the frame
-        # did not, and the spectrum left the canvas. Overlay is unaffected --
-        # its frame ignores offset by design.
-        if self._arrangement == self.ARRANGEMENT_STACKED:
-            self._y_limits = None
+        # Offset moves the spectrum within the existing frame and NOTHING
+        # else. It must not clear _y_limits: doing so recomputed the whole
+        # frame from the lane positions, which rescaled the view so that every
+        # spectrum appeared to resize when only one was moved. Offset is a
+        # translation, not a zoom. The frame is fixed by the lane layout (see
+        # _stacked_frame), which is deliberately built to hold offsets up to
+        # the range the spin box allows, so a trace cannot be moved out of it.
         self._redraw()
         self.tracesChanged.emit()
 

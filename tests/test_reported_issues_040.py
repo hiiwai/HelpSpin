@@ -1213,3 +1213,54 @@ def test_greyscale_palette_distinguishes_lines_by_dash(qtbot):
     assert len(styles) == 10
     assert len(set(styles)) >= 3, "several distinct dash patterns are needed"
     assert styles[0] != styles[1], "adjacent traces must differ"
+
+
+def test_offset_is_pure_translation_in_stacked_mode(qtbot):
+    """Offset moves a spectrum up or down and changes NOTHING else. An earlier
+    fix cleared the frame on every offset change, which recomputed the view
+    scale so every spectrum appeared to resize when only one was moved. Offset
+    is a translation, not a zoom."""
+    from pathlib import Path
+
+    import numpy as np
+
+    from helspin.ui.spectrum_canvas import SpectrumCanvas, Trace
+
+    canvas = SpectrumCanvas()
+    qtbot.addWidget(canvas)
+    for i in range(3):
+        canvas._traces.append(Trace(
+            path=Path(f"/d/{i}"), label=f"t{i}",
+            ppm=np.linspace(12, -2, 512),
+            intensity=np.abs(np.sin(np.linspace(0, 6, 512))) * 2.1e10,
+            color="#000000",
+        ))
+    canvas._y_limits = None
+    canvas.set_arrangement(canvas.ARRANGEMENT_STACKED)
+
+    def peak_height_pct(index):
+        low, high = canvas._axes.get_ylim()
+        data = np.asarray(canvas._axes.lines[index].get_ydata())
+        return (data.max() - data.min()) / (high - low) * 100
+
+    def baseline_pct(index):
+        low, high = canvas._axes.get_ylim()
+        data = np.asarray(canvas._axes.lines[index].get_ydata())
+        return (data.min() - low) / (high - low) * 100
+
+    heights_before = [peak_height_pct(i) for i in range(3)]
+    frame_before = canvas._axes.get_ylim()
+    others_before = baseline_pct(1), baseline_pct(2)
+
+    canvas.set_y_offset(0, canvas._traces[0].y_offset + 2.1e10 * 0.1)
+
+    # every spectrum keeps its apparent height -- no rescaling
+    for i in range(3):
+        assert peak_height_pct(i) == pytest.approx(heights_before[i], abs=0.5), (
+            "moving one offset must not resize any spectrum"
+        )
+    # the frame does not move
+    assert canvas._axes.get_ylim() == pytest.approx(frame_before, rel=1e-6)
+    # the other two spectra do not move
+    assert baseline_pct(1) == pytest.approx(others_before[0], abs=0.5)
+    assert baseline_pct(2) == pytest.approx(others_before[1], abs=0.5)

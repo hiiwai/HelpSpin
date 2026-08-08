@@ -21,6 +21,31 @@ build can be traced back to a specific entry here.
 > pre-rendering — `0.1.0` (no suffix) is now reserved for when rendering
 > works. `0.0.1` corresponds to what was previously built as `0.1.0.dev1`.
 
+## [0.5.8] — 2026-08-04
+
+### Y offset is a translation again, not a rescale
+
+0.5.7 fixed a trace sliding off-screen by re-fitting the frame whenever the
+offset changed. That was the wrong fix and it caused a worse bug: recomputing
+the frame from the lane positions rescaled the view, so moving one spectrum
+made **every** spectrum appear to change size — the reported "reset all Y
+scaling". Offset no longer touches the frame at all. It moves the selected
+spectrum up or down within a fixed frame and changes nothing else: not the
+scale, not the other spectra, not the view. The lane frame already reserves
+room for the offset range the spin box allows, so a moved trace stays on the
+canvas without any reframe. A test now pins that moving one offset leaves
+every spectrum's apparent height and every other spectrum's position
+unchanged.
+
+### Larger icon
+
+Cropped tighter to the mark so the sphere and wordmark fill the frame instead
+of floating in white space.
+
+### Tests
+
+800 (was 799).
+
 ## [0.5.7] — 2026-08-04
 
 ### Y offset in stacked mode made spectra vanish
