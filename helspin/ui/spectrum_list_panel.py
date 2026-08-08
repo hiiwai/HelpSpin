@@ -270,13 +270,19 @@ class SpectrumListPanel(QWidget):
                 if data is not None and getattr(data, "size", 0):
                     import numpy as _np
                     span = float(_np.nanmax(data)) - float(_np.nanmin(data))
-                    scale = max(float(getattr(trace, "y_scale", 1.0)), 1.0)
                     if _np.isfinite(span) and span > 0:
-                        self._offset_spin.setSingleStep(max(span * 0.05, 1e-6))
-                        # Room for a few hundred spectra-heights of offset, so
-                        # the control can always show the value actually in
-                        # force rather than a clamped stand-in.
-                        limit = max(span * scale * 500.0, 1e12)
+                        # One arrow click nudges by 2% of the spectrum's own
+                        # height -- a visible but small move. The previous step
+                        # of 5% of the RAW span came to ~1e9 for a 2e10
+                        # spectrum, so a single click threw the trace billions
+                        # of units and clean off the canvas (the reported
+                        # "peak disappeared").
+                        self._offset_spin.setSingleStep(span * 0.02)
+                        # The offset cannot exceed a few spectrum-heights.
+                        # Beyond that it is never what the user wants -- it just
+                        # ejects the trace -- and an unbounded range is what let
+                        # a fat-fingered value like -3.4e10 be entered at all.
+                        limit = span * 5.0
                         self._offset_spin.setRange(-limit, limit)
                 self._offset_spin.setValue(getattr(trace, "y_offset", 0.0))
                 self._set_controls_enabled(True)

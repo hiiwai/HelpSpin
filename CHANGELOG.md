@@ -21,6 +21,48 @@ build can be traced back to a specific entry here.
 > pre-rendering — `0.1.0` (no suffix) is now reserved for when rendering
 > works. `0.0.1` corresponds to what was previously built as `0.1.0.dev1`.
 
+## [0.5.7] — 2026-08-04
+
+### Y offset in stacked mode made spectra vanish
+
+Two faults compounded. The offset spin step was **5% of the raw intensity
+span** — about 1e9 for a 2e10 spectrum — so a single arrow click threw the
+trace a billion units, and the range was effectively unbounded, which is how a
+value like -34,517,863,967 (straight from the screenshots) got entered at all.
+And in stacked mode the frame is built from the drawn lane positions, which
+include each trace's offset, but the frame was only recomputed when the trace
+*set* changed — so a nudged trace moved while its frame did not, and slid off
+the canvas. The reported "peak disappeared".
+
+Now: one click nudges by **2% of the spectrum's own height**, the offset is
+capped at a few spectrum-heights (beyond which it only ejects the trace), and
+an offset change in stacked mode re-fits the frame so the moved trace stays on
+screen. Overlay is untouched — its frame ignores offset by design.
+
+### Hot-cold no longer runs through white
+
+The diverging ramp passed through near-white at its centre (`#F7F7F7` and
+neighbours), which is invisible on the white plot background — so the middle
+spectra of a series disappeared. The centre is now a visible teal→olive
+transition; the ends stay blue and red.
+
+### Greyscale palette leans on dashes
+
+For black-and-white figures, the greyscale palette now cycles solid, dashed,
+dotted and dash-dot so that traces are told apart by dash pattern — the only
+thing that survives greyscale printing — rather than by near-identical greys.
+The greys themselves were also spread wider in tone.
+
+### New icon
+
+The full HelSpin logo — sphere, spin ring, vector arrow and the HelSpin
+wordmark — from the supplied artwork, as the app and taskbar icon, with a
+matching multi-resolution ICO.
+
+### Tests
+
+799 (was 796).
+
 ## [0.5.6] — 2026-08-04
 
 ### Ten spectrum slots, not eight

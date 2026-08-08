@@ -106,25 +106,34 @@ PALETTES: dict[str, tuple[str, ...]] = {
     # swept above and below a midpoint -- where blue and red read as the two
     # directions and white as the middle. NOT for unrelated samples: the pale
     # central colours vanish on white.
+    # Hot-cold, a blue -> red diverging ramp for a series with a meaningful
+    # centre: difference spectra either side of zero, a variable swept above
+    # and below a midpoint. The centre is a visible teal/olive rather than
+    # white -- an earlier version ran through near-white (#F7F7F7 and
+    # neighbours), which is invisible on the white plot background, so the
+    # middle spectra of a series simply vanished.
     "Hot-cold": (
-        "#2166AC", "#4393C3", "#92C5DE", "#D1E5F0",
-        "#F7F7F7", "#FDDBC7", "#F4A582", "#D6604D",
-        "#B2182B", "#67001F",
+        "#2166AC", "#4393C3", "#4DAADD", "#5AB4A0",
+        "#5FA855", "#9C9A3E", "#E8A13C", "#E8743B",
+        "#D6402F", "#B2182B",
     ),
     # Greyscale, paired with distinct line styles below: in a figure printed
     # in black and white, colour conveys nothing and dash pattern is the only
     # thing telling two spectra apart.
     "Print (greyscale)": (
-        "#000000", "#555555", "#000000", "#777777",
-        "#333333", "#999999", "#444444", "#666666",
-        "#222222", "#888888",
+        "#000000", "#606060", "#202020", "#808080",
+        "#404040", "#A0A0A0", "#000000", "#707070",
+        "#303030", "#909090",
     ),
 }
 
 # Line styles that go with a palette, where the palette needs them to work.
 PALETTE_STYLES: dict[str, tuple[str, ...]] = {
+    # Every line a different dash where possible, cycling the four styles so
+    # that two greys of similar tone never share a dash. In a black-and-white
+    # figure this pattern is the ONLY thing distinguishing the traces.
     "Print (greyscale)": (
-        "-", "--", ":", "-.", "-", "--", ":", "-.", "-", "--",
+        "-", "--", ":", "-.", "-", "--", ":", "-.", "-", ":",
     ),
 }
 

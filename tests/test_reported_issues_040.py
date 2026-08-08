@@ -1151,3 +1151,65 @@ def test_rainbow_and_hot_cold_palettes_exist(qtbot):
     hot_cold = palette_colours("Hot-cold")
     assert hot_cold[0].upper().startswith("#2") or hot_cold[0].upper().startswith("#1")
     assert hot_cold[-1].upper().startswith("#6") or hot_cold[-1].upper().startswith("#B")
+
+
+def test_nudging_a_stacked_offset_keeps_the_trace_on_screen(qtbot):
+    """The reported vanishing spectrum: nudging Y offset in stacked mode moved
+    the trace but not the frame, so it slid off the canvas. The frame now
+    follows the offset."""
+    from pathlib import Path
+
+    import numpy as np
+
+    from helspin.ui.spectrum_canvas import SpectrumCanvas, Trace
+
+    canvas = SpectrumCanvas()
+    qtbot.addWidget(canvas)
+    for i in range(3):
+        canvas._traces.append(Trace(
+            path=Path(f"/d/{i}"), label=f"t{i}",
+            ppm=np.linspace(1.66, 1.04, 512),
+            intensity=np.abs(np.sin(np.linspace(0, 6, 512))) * 2.1e10,
+            color="#000000",
+        ))
+    canvas._y_limits = None
+    canvas.set_arrangement(canvas.ARRANGEMENT_STACKED)
+
+    def fraction_on_screen(index):
+        low, high = canvas._axes.get_ylim()
+        data = np.asarray(canvas._axes.lines[index].get_ydata())
+        if data.max() < low or data.min() > high:
+            return 0.0
+        return (min(data.max(), high) - max(data.min(), low)) / (high - low)
+
+    span = 2.1e10
+    canvas.set_y_offset(0, span * 0.06)
+    assert fraction_on_screen(0) > 0.1, "a nudged-up trace must stay visible"
+    canvas.set_y_offset(0, -span * 0.06)
+    assert fraction_on_screen(0) > 0.1, "a nudged-down trace must stay visible"
+
+
+def test_hot_cold_palette_has_no_invisible_near_white(qtbot):
+    """The pale centre of the original ramp vanished on the white plot; the
+    middle spectra of a series simply disappeared."""
+    from helspin.domain.project import palette_colours
+
+    for hex_colour in palette_colours("Hot-cold"):
+        r = int(hex_colour[1:3], 16)
+        g = int(hex_colour[3:5], 16)
+        b = int(hex_colour[5:7], 16)
+        assert not (r > 225 and g > 225 and b > 225), (
+            f"{hex_colour} is near-white and invisible on a white background"
+        )
+
+
+def test_greyscale_palette_distinguishes_lines_by_dash(qtbot):
+    """In black and white, hue conveys nothing; the dash pattern is the only
+    thing telling two traces apart."""
+    from helspin.domain.project import palette_styles
+
+    styles = palette_styles("Print (greyscale)")
+    assert styles is not None
+    assert len(styles) == 10
+    assert len(set(styles)) >= 3, "several distinct dash patterns are needed"
+    assert styles[0] != styles[1], "adjacent traces must differ"
