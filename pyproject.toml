@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "helspin"
-version = "0.5.5"
+version = "0.5.6"
 description = "Compare Bruker NMR spectra and build publication figures"
 requires-python = ">=3.11"
 authors = [{ name = "H. Iw-ai" }]

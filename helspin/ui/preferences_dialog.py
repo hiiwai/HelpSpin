@@ -28,6 +28,9 @@ from PySide6.QtWidgets import (
 from ..domain.project import palette_colours, palette_names, palette_styles
 
 # Okabe-Ito: colour-blind safe, and the same cycle the domain uses.
+# Ten slots now, not eight. The two extra colours continue the colour-blind
+# safe set (a grey and a teal) so the default palette still works when ten
+# spectra are overlaid.
 DEFAULT_COLORS = [
     "#000000",   # black
     "#0072B2",   # blue        (was orange -- poor contrast against black on
@@ -38,6 +41,8 @@ DEFAULT_COLORS = [
     "#56B4E9",   # sky blue
     "#E69F00",   # orange
     "#8C564B",   # brown
+    "#666666",   # grey
+    "#117733",   # deep teal-green
 ]
 
 LINE_STYLES = {
@@ -47,7 +52,7 @@ LINE_STYLES = {
     "Dash-dot": "-.",
 }
 
-SLOT_COUNT = 8
+SLOT_COUNT = 10
 MIN_LINE_WIDTH = 0.1
 MAX_LINE_WIDTH = 10.0
 DEFAULT_LINE_WIDTH = 0.8

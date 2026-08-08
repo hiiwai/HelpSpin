@@ -1096,3 +1096,58 @@ def test_opacity_applies_to_the_spectra_not_the_labels(qtbot):
     labels = [t for t in canvas._axes.texts if "/d/1" in t.get_text()]
     assert labels, "the spectrum should still be named"
     assert labels[0].get_alpha() in (None, 1.0), "names stay fully opaque"
+
+
+def test_ten_slots_and_ten_default_colours(qtbot):
+    """Expanded from eight to ten so up to ten overlaid spectra each get their
+    own colour and row in Preferences."""
+    from helspin.ui.preferences_dialog import (
+        DEFAULT_COLORS,
+        SLOT_COUNT,
+        PreferencesDialog,
+    )
+
+    assert SLOT_COUNT == 10
+    assert len(DEFAULT_COLORS) == 10
+
+    dialog = PreferencesDialog()
+    qtbot.addWidget(dialog)
+    assert len(dialog.styles()) == 10
+
+
+def test_the_default_line_style_is_solid_for_every_slot(qtbot):
+    """A fresh configuration is all solid; only the greyscale palette, chosen
+    deliberately, introduces dashes."""
+    from helspin.ui.preferences_dialog import PreferencesDialog
+
+    dialog = PreferencesDialog()
+    qtbot.addWidget(dialog)
+    assert all(s["style"] == "-" for s in dialog.styles())
+
+
+def test_reset_restores_solid_across_all_ten_slots(qtbot):
+    """After the greyscale palette has set dashes, Reset must put every slot
+    back to solid, not just the first eight."""
+    from helspin.ui.preferences_dialog import PreferencesDialog
+
+    dialog = PreferencesDialog()
+    qtbot.addWidget(dialog)
+    dialog._palette_box.setCurrentText("Print (greyscale)")
+    dialog._apply_palette()
+    assert len({s["style"] for s in dialog.styles()}) > 1  # dashes now present
+
+    dialog._reset()
+    assert all(s["style"] == "-" for s in dialog.styles())
+
+
+def test_rainbow_and_hot_cold_palettes_exist(qtbot):
+    """Two ordered ramps for series where colour should track order: Rainbow
+    for a plain progression, Hot-cold for one with a meaningful centre."""
+    from helspin.domain.project import palette_colours, palette_names
+
+    assert "Rainbow" in palette_names()
+    assert "Hot-cold" in palette_names()
+    # Hot-cold runs blue -> pale -> red; its ends must be far apart.
+    hot_cold = palette_colours("Hot-cold")
+    assert hot_cold[0].upper().startswith("#2") or hot_cold[0].upper().startswith("#1")
+    assert hot_cold[-1].upper().startswith("#6") or hot_cold[-1].upper().startswith("#B")

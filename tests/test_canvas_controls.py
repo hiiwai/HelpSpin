@@ -2306,14 +2306,17 @@ def test_opening_the_palette_list_does_not_change_anything(qtbot):
     assert [s["color"] for s in dialog.styles()] == before
 
 
-def test_every_palette_offers_eight_distinct_colours():
+def test_every_palette_offers_ten_distinct_colours():
+    """Ten slots now, so every palette has to fill ten. The greyscale set is
+    allowed to repeat greys because its dashes distinguish the lines; the
+    rest must be ten different colours or two spectra look identical."""
     from helspin.domain.project import palette_colours, palette_names
 
     for name in palette_names():
         colours = palette_colours(name)
-        assert len(colours) == 8, name
+        assert len(colours) == 10, f"{name} has {len(colours)}"
         if name != "Print (greyscale)":
-            assert len(set(c.upper() for c in colours)) == 8, (
+            assert len(set(c.upper() for c in colours)) == 10, (
                 f"{name} repeats a colour, so two spectra would look identical"
             )
 

@@ -47,7 +47,9 @@ DEFAULT_PALETTE: tuple[str, ...] = (
     "#CC79A7",   # reddish purple
     "#8C564B",   # brown
     "#E69F00",   # orange
-    "#56B4E9",   # sky blue (lightest -- last)
+    "#56B4E9",   # sky blue
+    "#666666",   # grey
+    "#117733",   # deep teal-green (lightest set kept last)
 )
 
 
@@ -66,23 +68,48 @@ PALETTES: dict[str, tuple[str, ...]] = {
     "Tol bright": (
         "#000000", "#4477AA", "#EE6677", "#228833",
         "#CCBB44", "#66CCEE", "#AA3377", "#BBBBBB",
+        "#DD7722", "#4499AA",
     ),
     # Tol muted: lower chroma, easier to read as thin lines on white paper.
     "Tol muted": (
         "#332288", "#88CCEE", "#44AA99", "#117733",
         "#999933", "#DDCC77", "#CC6677", "#882255",
+        "#661100", "#6699CC",
     ),
     # Tol high contrast, extended: for projection and poor lighting.
     "High contrast": (
         "#000000", "#004488", "#DDAA33", "#BB5566",
         "#009988", "#EE7733", "#33BBEE", "#EE3377",
+        "#775500", "#7733AA",
     ),
-    # matplotlib's default. Familiar from most Python figures, and NOT
-    # colour-blind safe -- included because recognisability is sometimes worth
-    # more than safety, but that trade is worth making knowingly.
+    # matplotlib's default tab10, plus its two tab20 extensions to reach ten.
+    # Familiar from most Python figures, and NOT colour-blind safe -- included
+    # because recognisability is sometimes worth more than safety, but that
+    # trade is worth making knowingly.
     "Matplotlib tab10": (
         "#1F77B4", "#FF7F0E", "#2CA02C", "#D62728",
         "#9467BD", "#8C564B", "#E377C2", "#7F7F7F",
+        "#BCBD22", "#17BECF",
+    ),
+    # Rainbow, in spectral order red->violet. Ordered hues rather than a set
+    # chosen for separation, so it is the wrong choice when two spectra land
+    # on adjacent colours -- but it is what a reader expects when a series is
+    # a progression (a titration, a time course) rather than unrelated
+    # samples, where the colour should track the order.
+    "Rainbow": (
+        "#E6194B", "#F58231", "#FFE119", "#BFEF45",
+        "#3CB44B", "#42D4F4", "#4363D8", "#911EB4",
+        "#F032E6", "#A9A9A9",
+    ),
+    # Hot-cold, a blue->red diverging ramp through white. For a series with a
+    # meaningful centre -- difference spectra either side of zero, a variable
+    # swept above and below a midpoint -- where blue and red read as the two
+    # directions and white as the middle. NOT for unrelated samples: the pale
+    # central colours vanish on white.
+    "Hot-cold": (
+        "#2166AC", "#4393C3", "#92C5DE", "#D1E5F0",
+        "#F7F7F7", "#FDDBC7", "#F4A582", "#D6604D",
+        "#B2182B", "#67001F",
     ),
     # Greyscale, paired with distinct line styles below: in a figure printed
     # in black and white, colour conveys nothing and dash pattern is the only
@@ -90,12 +117,15 @@ PALETTES: dict[str, tuple[str, ...]] = {
     "Print (greyscale)": (
         "#000000", "#555555", "#000000", "#777777",
         "#333333", "#999999", "#444444", "#666666",
+        "#222222", "#888888",
     ),
 }
 
 # Line styles that go with a palette, where the palette needs them to work.
 PALETTE_STYLES: dict[str, tuple[str, ...]] = {
-    "Print (greyscale)": ("-", "--", ":", "-.", "-", "--", ":", "-."),
+    "Print (greyscale)": (
+        "-", "--", ":", "-.", "-", "--", ":", "-.", "-", "--",
+    ),
 }
 
 

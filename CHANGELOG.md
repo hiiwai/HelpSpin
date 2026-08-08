@@ -21,6 +21,44 @@ build can be traced back to a specific entry here.
 > pre-rendering — `0.1.0` (no suffix) is now reserved for when rendering
 > works. `0.0.1` corresponds to what was previously built as `0.1.0.dev1`.
 
+## [0.5.6] — 2026-08-04
+
+### Ten spectrum slots, not eight
+
+Preferences now has ten colour/style/width rows and the palettes fill ten, so
+up to ten overlaid spectra each get their own colour. The two extra default
+colours (a grey and a deep teal) continue the colour-blind-safe set.
+
+### Two ordered palettes: Rainbow and Hot-cold
+
+The existing palettes are sets chosen so their members stay *distinguishable*
+— the right thing for unrelated samples. These two are ordered ramps, for a
+series where the colour should track the order:
+
+- **Rainbow** — spectral red→violet, for a plain progression (a titration, a
+  time course). Wrong for unrelated samples, since neighbours in the sequence
+  land on adjacent hues.
+- **Hot-cold** — a blue→white→red diverging ramp, for a series with a
+  meaningful centre: difference spectra either side of zero, a variable swept
+  above and below a midpoint. Blue and red read as the two directions, white
+  as the middle. Not for unrelated samples — the pale central colours vanish
+  on white.
+
+### Default line style confirmed solid
+
+A fresh configuration was already all solid, and now is across all ten slots.
+Only the greyscale palette, chosen deliberately, introduces dashes — and Reset
+puts every slot back to solid.
+
+### New icon
+
+The mark plus a **12Spin** wordmark set at 45°, white with a red outline, on
+the navy field. Regenerated as both the PNG and the multi-resolution ICO.
+
+### Tests
+
+796 (was 792).
+
 ## [0.5.5] — 2026-08-04
 
 ### Windows installer scaffolding
