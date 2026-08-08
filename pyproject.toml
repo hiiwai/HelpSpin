@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "helspin"
-version = "0.5.4"
+version = "0.5.5"
 description = "Compare Bruker NMR spectra and build publication figures"
 requires-python = ">=3.11"
 authors = [{ name = "H. Iw-ai" }]
@@ -50,7 +50,7 @@ helspin-gui = "helspin.__main__:main"
 [tool.setuptools.package-data]
 # The icon has to travel with the wheel; without this the installed copy has
 # no resources directory and the app falls back to a blank window icon.
-helspin = ["resources/*.png", "resources/*.txt"]
+helspin = ["resources/*.png", "resources/*.txt", "resources/*.ico"]
 
 [tool.setuptools.packages.find]
 include = ["helspin*"]

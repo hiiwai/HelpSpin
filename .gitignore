@@ -38,3 +38,8 @@ nmr/
 *.ser
 1r
 2rr
+
+# PyInstaller / Inno Setup build output
+/build/
+/dist/
+*.spec.bak

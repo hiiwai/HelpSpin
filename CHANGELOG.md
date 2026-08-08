@@ -21,6 +21,45 @@ build can be traced back to a specific entry here.
 > pre-rendering — `0.1.0` (no suffix) is now reserved for when rendering
 > works. `0.0.1` corresponds to what was previously built as `0.1.0.dev1`.
 
+## [0.5.5] — 2026-08-04
+
+### Windows installer scaffolding
+
+Everything needed to build a one-click `setup.exe`, under `packaging/`:
+
+- `helspin.spec` — PyInstaller, one-directory (see below), bundling the
+  licence, notices and artwork at the path the licence dialog reads them from.
+- `helspin.iss` — Inno Setup: a per-user install needing no administrator
+  rights, a Start Menu entry, the licence shown and accepted before install,
+  and an uninstaller.
+- `build_installer.py` — runs both stages, taking the version from
+  `pyproject.toml` so nothing drifts, and refusing to run if a tool is
+  missing.
+- `BUILD.md` — the guide, including the two non-negotiables.
+- A multi-resolution `icon.ico` (16–256 px), so the taskbar and Explorer have
+  a crisp size rather than a badly down-sampled 512.
+
+The spec was dry-run to completion here: it resolves every import, bundles the
+resources to `helspin/resources/`, and produces the collected app directory.
+That validates the spec. **The actual Windows build must run on Windows** —
+PyInstaller bundles the platform it runs on — so the produced `.exe` is
+untested by me and you are its first runner.
+
+Two things the guide is firm about, both already established in this project:
+
+- **One-directory, never one-file.** Qt is LGPL and a recipient must be able
+  to relink it; a one-file exe unpacks to a temp dir and cannot be. One-dir
+  keeps every Qt DLL replaceable.
+- **The installer is unsigned.** It works, but SmartScreen warns and managed
+  machines block it — the same publisher rule that blocked `helspin-gui.exe`.
+  Signing needs a certificate the project does not have yet, and the
+  pip-install route stays the reliable path onto a managed machine until then.
+  Don't buy a certificate until demand justifies it.
+
+### Tests
+
+792, unchanged — packaging adds no runtime code.
+
 ## [0.5.4] — 2026-08-04
 
 ### Proprietary identifiers removed from the source
