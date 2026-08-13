@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "helspin"
+version = "0.0.7"
+description = "Compare Bruker NMR spectra and build publication figures"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+dependencies = [
+    "numpy>=1.26,<2.5",  # nmrglue 0.11's tecmag.py uses a numpy dtype alias
+                         # ('a8') that numpy fully removed at 2.5 -- a hard
+                         # import-time crash, not a deprecation warning, and
+                         # unrelated to any Bruker-reading code we call. See
+                         # README "Bugs the tests caught" and re-check this
+                         # ceiling when nmrglue publishes a fix.
+    "scipy>=1.11",       # pulled in by nmrglue; used for 2D interpolation
+    "nmrglue>=0.10",     # New BSD
+    "matplotlib>=3.8",
+    "pillow>=10.0",      # required for TIFF and JPEG export; declared explicitly
+    "PySide6>=6.6",      # LGPLv3 -- package one-dir so Qt stays relinkable
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "pytest-qt>=4.4",
+    "mypy>=1.8",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+helspin = "helspin.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["helspin*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+branch = true
+source = ["helspin"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["helspin/domain", "helspin/services"]
+
+[[tool.mypy.overrides]]
+module = ["nmrglue.*", "matplotlib.*", "scipy.*"]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 90
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

@@ -1,0 +1,840 @@
+"""The main canvas: drop spectra straight onto it and see them.
+
+Deliberately simple, replacing the earlier layout-first flow (define a figure
+with N slots, then fill the slots). Here you just drag one or more datasets
+from the browser onto the canvas and they are loaded and drawn. Arrangement
+(overlay vs stacked) is a control you flip afterwards, not a decision you have
+to make up front.
+
+Loading happens on a worker thread: reading processed data off a network share
+is slow enough to freeze the GUI if done inline. Each spectrum is drawn as it
+arrives, so dropping several does not block on the slowest one.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
+from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+from ..domain.project import DEFAULT_PALETTE as PALETTE
+from .dataset_model import MIME_DATASET
+
+# Okabe-Ito is already the domain palette; reuse it so on-screen colours match
+# whatever an eventual export produces.
+_FALLBACK_PALETTE = [
+    "#000000", "#E69F00", "#56B4E9", "#009E73",
+    "#F0E442", "#0072B2", "#D55E00", "#CC79A7",
+]
+
+
+# Real spectra in one figure can differ by many orders of magnitude (a 5 mM
+# reference next to a 50 uM sample is ~1000x on its own), so the scale range
+# has to span far more than a few decades. A 1000x ceiling silently clamped
+# autoscale and made strong/weak pairs impossible to compare.
+MIN_Y_SCALE = 1e-9
+MAX_Y_SCALE = 1e9
+
+LINE_STYLES = {
+    "Solid": "-",
+    "Dashed": "--",
+    "Dotted": ":",
+    "Dash-dot": "-.",
+}
+
+
+def _palette() -> list[str]:
+    try:
+        return list(PALETTE) or _FALLBACK_PALETTE
+    except Exception:  # noqa: BLE001 - palette shape is not load-bearing here
+        return _FALLBACK_PALETTE
+
+
+class _PlotCanvas(FigureCanvasQTAgg):
+    """Canvas subclass that guarantees mouse tracking.
+
+    The wheel is handled through matplotlib's own ``scroll_event``, which the
+    backend emits from FigureCanvasQT.wheelEvent. An earlier version tried to
+    override that by assigning ``canvas.wheelEvent = fn`` on the INSTANCE --
+    Qt dispatches virtuals through the class, so the assignment was silently
+    ignored AND it shadowed the backend's own handler, killing scroll_event
+    too. Hence: no wheel override here, just tracking so motion events arrive
+    without a button held down.
+    """
+
+    def __init__(self, figure, owner):
+        super().__init__(figure)
+        self._owner = owner
+        self.setMouseTracking(True)
+
+
+@dataclass
+class Trace:
+    """One loaded 1D spectrum on the canvas.
+
+    y_scale and y_offset are per-trace so a weak spectrum can be brought up to
+    a strong one without touching the others -- adjusted with the scroll wheel
+    over the plot, or typed exactly. line_width and color are per-trace too so
+    a preference change can apply to all while still allowing overrides.
+    """
+
+    path: Path
+    label: str
+    ppm: np.ndarray
+    intensity: np.ndarray
+    color: str
+    visible: bool = True
+    y_scale: float = 1.0
+    y_offset: float = 0.0
+    line_width: float = 0.8
+    line_style: str = "-"      # matplotlib style: '-', '--', ':', '-.'
+
+
+class _LoadSignals(QObject):
+    loaded = Signal(object, object, object, str)   # path, ppm, intensity, label
+    failed = Signal(object, str)                   # path, message
+
+
+class _LoadTask(QRunnable):
+    """Reads one spectrum off the GUI thread.
+
+    Pure I/O plus numpy: touches no Qt model state, so it is safe on a worker.
+    The result is handed back by signal and applied on the GUI thread.
+    """
+
+    def __init__(self, reader, path: Path, label: str, dimensionality: int):
+        super().__init__()
+        self._reader = reader
+        self._path = path
+        self._label = label
+        self._dim = dimensionality
+        self.signals = _LoadSignals()
+
+    def run(self) -> None:
+        try:
+            if self._dim != 1:
+                # 2D contour rendering is not implemented yet; say so plainly
+                # rather than silently dropping the file.
+                self.signals.failed.emit(
+                    self._path, "2D display is not implemented yet"
+                )
+                return
+            spec = self._reader.read_1d(self._path)
+            ppm = np.asarray(spec.axis.ppm_scale(), dtype=np.float64)
+            intensity = np.asarray(spec.real, dtype=np.float64)
+            self.signals.loaded.emit(self._path, ppm, intensity, self._label)
+        except Exception as exc:  # noqa: BLE001 - one bad file must not kill the drop
+            self.signals.failed.emit(self._path, str(exc))
+
+
+class SpectrumCanvas(QWidget):
+    """A matplotlib canvas that accepts dataset drops and plots them.
+
+    Public surface kept small on purpose: drop things on it, call
+    set_arrangement / set_ppm_range / clear. No figure-layout model, no slots.
+    """
+
+    spectrumAdded = Signal(str)      # label
+    loadFailed = Signal(str, str)    # path, message
+    tracesChanged = Signal()
+    cursorMoved = Signal(float, float)    # ppm, intensity under the cursor
+
+    ARRANGEMENT_OVERLAY = "overlay"
+    ARRANGEMENT_STACKED = "stacked"
+
+    def __init__(self, reader=None, pool: QThreadPool | None = None, parent=None):
+        super().__init__(parent)
+        if reader is None:
+            from ..infrastructure.nmrglue_reader import NmrglueReader
+
+            reader = NmrglueReader()
+        self._reader = reader
+        self._pool = pool or QThreadPool.globalInstance()
+        self._traces: list[Trace] = []
+        self._arrangement = self.ARRANGEMENT_OVERLAY
+        self._ppm_range: tuple[float, float] | None = None
+        self._inflight: set = set()
+        self._selected_index: int | None = None
+        self._default_line_width = 0.8
+        self._palette_override: list[str] | None = None
+        # Appearance per SLOT (1st spectrum loaded, 2nd, ...), set from
+        # Preferences. Kept here so a newly dropped spectrum picks up its
+        # slot's colour/style/width immediately.
+        from .preferences_dialog import default_styles
+        self._slot_styles = default_styles()
+        # Y limits are held FIXED once established. Without this matplotlib
+        # autoscales, so multiplying a trace's intensity just rescales the
+        # axis and the spectrum looks completely unchanged -- the reported
+        # 'Y scale does nothing' bug.
+        self._y_limits: tuple[float, float] | None = None
+        self._show_grid = False
+        # Grid spacing in ppm. None = let matplotlib choose.
+        self._grid_spacing_ppm = None
+        self._crosshair = None
+        self._crosshair_enabled = True
+        self._drag_start = None
+
+        self._figure = Figure(figsize=(6, 4), tight_layout=False)
+        self._canvas = _PlotCanvas(self._figure, self)
+        self._axes = self._figure.add_subplot(111)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._canvas)
+
+        self.setAcceptDrops(True)
+        # Scroll wheel over the plot scales the SELECTED trace vertically.
+        self._canvas.setFocusPolicy(Qt.WheelFocus)
+        # matplotlib's own scroll event rather than overriding Qt's
+        # wheelEvent: assigning an instance attribute over a C++ virtual
+        # is not reliably dispatched by the Shiboken binding.
+        self._canvas.mpl_connect("scroll_event", self._on_scroll)
+        # Crosshair + drag-to-move use matplotlib's own event system rather
+        # than Qt's, so the coordinates arrive already in DATA space.
+        self._canvas.mpl_connect("motion_notify_event", self._on_mouse_move)
+        self._canvas.mpl_connect("button_press_event", self._on_mouse_press)
+        self._canvas.mpl_connect("button_release_event", self._on_mouse_release)
+        self._canvas.mpl_connect("axes_leave_event", self._on_mouse_leave)
+        self._redraw()
+
+    # -- public state --------------------------------------------------------
+
+    @property
+    def traces(self) -> list[Trace]:
+        return list(self._traces)
+
+    def arrangement(self) -> str:
+        return self._arrangement
+
+    def set_arrangement(self, arrangement: str) -> None:
+        if arrangement not in (self.ARRANGEMENT_OVERLAY, self.ARRANGEMENT_STACKED):
+            return
+        self._arrangement = arrangement
+        self._y_limits = None   # stacking changes the frame entirely
+        self._redraw()
+
+    def set_ppm_range(self, left: float, right: float) -> None:
+        """ppm axes descend, so left must be the HIGHER value."""
+        if left <= right:
+            return
+        self._ppm_range = (left, right)
+        self._redraw()
+
+    def full_range(self) -> None:
+        """Union of every loaded trace's ppm span (not the intersection) --
+        show everything rather than only the overlap."""
+        self._ppm_range = None
+        self._redraw()
+
+    def ppm_bounds(self) -> tuple[float, float] | None:
+        """Union of every visible trace's ppm span, or None if nothing loaded.
+
+        Union rather than intersection: the range control should be able to
+        show everything that exists, not only the overlap.
+        """
+        visible = [t for t in self._traces if t.visible]
+        if not visible:
+            return None
+        left = max(float(np.nanmax(t.ppm)) for t in visible)
+        right = min(float(np.nanmin(t.ppm)) for t in visible)
+        return (left, right)
+
+    def clear(self) -> None:
+        """Reset the canvas completely -- traces, selection, and ppm range.
+
+        A true "start over", not just removing the lines: leaving a stale ppm
+        range or selection behind after clearing is what makes the next drop
+        appear on a nonsensical axis.
+        """
+        self._traces.clear()
+        self._ppm_range = None
+        self._selected_index = None
+        self._y_limits = None
+        self._redraw()
+        self.tracesChanged.emit()
+
+    # -- selection and per-trace vertical scaling ----------------------------
+
+    def selected_index(self) -> int | None:
+        return self._selected_index
+
+    def select_trace(self, index: int | None) -> None:
+        """Select which trace the wheel / y-scale controls act on.
+
+        None means 'nothing selected'; out-of-range indexes are ignored rather
+        than raising, since a selection can outlive the trace it referred to.
+        """
+        if index is None:
+            self._selected_index = None
+        elif 0 <= index < len(self._traces):
+            self._selected_index = index
+        else:
+            return
+        self._redraw()
+        self.tracesChanged.emit()
+
+    def selected_trace(self) -> Trace | None:
+        if self._selected_index is None:
+            return None
+        if not (0 <= self._selected_index < len(self._traces)):
+            return None
+        return self._traces[self._selected_index]
+
+    def set_y_scale(self, index: int, scale: float) -> None:
+        """Set one trace's vertical scale. Non-positive values are refused --
+        a zero or negative scale would flatten or invert the spectrum, which
+        is never what a scale control is meant to do."""
+        if not (0 <= index < len(self._traces)):
+            return
+        if scale <= 0 or not np.isfinite(scale):
+            return
+        scale = max(MIN_Y_SCALE, min(float(scale), MAX_Y_SCALE))
+        self._traces[index].y_scale = scale
+        self._redraw()
+        self.tracesChanged.emit()
+
+    def nudge_y_scale(self, index: int, factor: float) -> None:
+        """Multiply a trace's scale (wheel steps). Clamped to a sane range so
+        a fast scroll cannot drive it to zero or to a value that overflows."""
+        if not (0 <= index < len(self._traces)):
+            return
+        current = self._traces[index].y_scale
+        new = current * float(factor)
+        # Clamped to a range where the spectrum stays findable. The old
+        # ceiling of 1e9 let a few scroll notches launch a trace far off
+        # screen with no obvious way back.
+        new = max(MIN_Y_SCALE, min(new, MAX_Y_SCALE))
+        self.set_y_scale(index, new)
+
+    def set_y_offset(self, index: int, offset: float) -> None:
+        if not (0 <= index < len(self._traces)):
+            return
+        if not np.isfinite(offset):
+            return
+        self._traces[index].y_offset = float(offset)
+        self._redraw()
+        self.tracesChanged.emit()
+
+    def nudge_y_offset(self, index: int, delta: float) -> None:
+        if not (0 <= index < len(self._traces)):
+            return
+        self.set_y_offset(index, self._traces[index].y_offset + float(delta))
+
+    def _on_scroll(self, event) -> None:
+        """Wheel over the plot scales the selected trace vertically.
+
+        With nothing selected the wheel does nothing rather than silently
+        scaling an arbitrary trace -- guessing which spectrum the user meant
+        would be worse than requiring a click first.
+        """
+        index = self._selected_index
+        if index is None:
+            return
+        step = getattr(event, "step", 0) or 0
+        if step == 0:
+            button = getattr(event, "button", None)
+            step = 1 if button == "up" else (-1 if button == "down" else 0)
+        if step == 0:
+            return
+        # ~10% per notch, direction following the scroll.
+        factor = 1.1 if step > 0 else (1.0 / 1.1)
+        self.nudge_y_scale(index, factor)
+
+    # -- appearance preferences ---------------------------------------------
+
+    def set_default_line_width(self, width: float) -> None:
+        """Applies to every trace, including ones already drawn."""
+        if width <= 0 or not np.isfinite(width):
+            return
+        self._default_line_width = float(width)
+        for trace in self._traces:
+            trace.line_width = float(width)
+        self._redraw()
+
+    def default_line_width(self) -> float:
+        return self._default_line_width
+
+    def set_trace_line_width(self, index: int, width: float) -> None:
+        if not (0 <= index < len(self._traces)):
+            return
+        if width <= 0 or not np.isfinite(width):
+            return
+        self._traces[index].line_width = float(width)
+        self._redraw()
+
+    def set_trace_color(self, index: int, color: str) -> None:
+        if not (0 <= index < len(self._traces)):
+            return
+        if not color:
+            return
+        self._traces[index].color = color
+        self._redraw()
+        self.tracesChanged.emit()
+
+    def set_palette(self, colors: list[str]) -> None:
+        """Replace the colour cycle and recolour existing traces in order."""
+        if not colors:
+            return
+        self._palette_override = list(colors)
+        for i, trace in enumerate(self._traces):
+            trace.color = colors[i % len(colors)]
+        self._redraw()
+        self.tracesChanged.emit()
+
+    def _active_palette(self) -> list[str]:
+        return self._palette_override or _palette()
+
+    def set_trace_visible(self, index: int, visible: bool) -> None:
+        if not (0 <= index < len(self._traces)):
+            return
+        self._traces[index].visible = bool(visible)
+        # Deliberately does NOT refit the frame. Hiding a spectrum is a
+        # viewing action, not a change to the data being framed: refitting
+        # made everything jump in scale the moment a box was unticked, and
+        # re-ticking it did not restore the previous view. Only adding or
+        # removing spectra, or switching arrangement, re-fits.
+        self._redraw()
+        self.tracesChanged.emit()
+
+    def remove_trace(self, path: Path) -> None:
+        before = len(self._traces)
+        self._traces = [t for t in self._traces if t.path != Path(path)]
+        if len(self._traces) != before:
+            self._y_limits = None   # re-fit to what remains
+            self._y_limits = None   # trace set changed -> refit
+            self._redraw()
+            self.tracesChanged.emit()
+
+    # -- loading -------------------------------------------------------------
+
+    def add_dataset(self, path, label: str, dimensionality: int = 1) -> None:
+        """Queue one dataset for loading and drawing."""
+        path = Path(path)
+        if any(t.path == path for t in self._traces):
+            return   # already shown; dropping twice is a no-op, not a duplicate
+        task = _LoadTask(self._reader, path, label, dimensionality)
+        task.signals.loaded.connect(self._on_loaded)
+        task.signals.failed.connect(self._on_failed)
+        # Hold a reference: QThreadPool does not keep the Python object alive,
+        # and losing it mid-flight would silently discard the result.
+        self._inflight.add(task)
+        self._pool.start(task)
+
+    def _on_loaded(self, path, ppm, intensity, label: str) -> None:
+        path = Path(path)
+        self._inflight = {t for t in self._inflight if t._path != path}
+        if any(t.path == path for t in self._traces):
+            return
+        slot = self._slot_styles[len(self._traces) % len(self._slot_styles)]
+        self._traces.append(
+            Trace(
+                path=path, label=label, ppm=ppm, intensity=intensity,
+                color=slot["color"], line_width=slot["width"],
+                line_style=slot["style"],
+            )
+        )
+        self._y_limits = None   # new trace -> recompute the frame
+        # Autoscale on every drop. Pinning the y range at the FIRST drop
+        # (an earlier mistake) meant a spectrum loaded afterwards with a
+        # much smaller intensity was drawn as a flat line at zero, because
+        # the axis was still scaled to the first one. Limits are recomputed
+        # whenever the set of traces changes, and only held fixed while the
+        # user adjusts scale/offset -- which is what makes those
+        # adjustments visible.
+        self._y_limits = None
+        # First spectrum dropped becomes the selection, so the wheel and
+        # y-scale controls work immediately without an extra click.
+        if self._selected_index is None:
+            self._selected_index = len(self._traces) - 1
+        self._redraw()
+        self.spectrumAdded.emit(label)
+        self.tracesChanged.emit()
+
+    def _on_failed(self, path, message: str) -> None:
+        path = Path(path)
+        self._inflight = {t for t in self._inflight if t._path != path}
+        self.loadFailed.emit(str(path), message)
+
+    # -- drawing -------------------------------------------------------------
+
+    def _redraw(self) -> None:
+        self._axes.clear()
+
+        # Guard on VISIBLE traces, not merely on any traces existing: with
+        # spectra loaded but all of them unchecked, the drawing code below has
+        # nothing to take a max() over and previously raised ValueError,
+        # crashing the redraw. Both "nothing loaded" and "all hidden" show the
+        # empty state.
+        visible_traces = [t for t in self._traces if t.visible]
+        if not visible_traces:
+            self._axes.set_xticks([])
+            self._axes.set_yticks([])
+            for spine in self._axes.spines.values():
+                spine.set_visible(False)
+            self._axes.text(
+                0.5, 0.5,
+                "Drag spectra here" if not self._traces
+                else "All spectra hidden",
+                ha="center", va="center", fontsize=13, color="#999999",
+                transform=self._axes.transAxes,
+            )
+            self._canvas.draw_idle()
+            return
+
+        for spine in self._axes.spines.values():
+            spine.set_visible(True)
+
+        visible = visible_traces
+        offset_step = 0.0
+        if self._arrangement == self.ARRANGEMENT_STACKED and visible:
+            # Measure the SCALED span: if a trace has been scaled up, the
+            # stack spacing must grow with it or it overlaps its neighbour.
+            tallest = max(
+                (float(np.nanmax(t.intensity)) - float(np.nanmin(t.intensity)))
+                * t.y_scale
+                for t in visible
+            )
+            offset_step = tallest * 1.05 if tallest > 0 else 1.0
+
+        selected = self.selected_trace()
+        drawn = []
+        for i, trace in enumerate(visible):
+            # Per-trace vertical scale and offset, then the stacking offset.
+            y = (trace.intensity * trace.y_scale) + trace.y_offset + (offset_step * i)
+            width = trace.line_width
+            if selected is not None and trace is selected and len(visible) > 1:
+                width = width * 1.9   # make the selected trace obvious
+            self._axes.plot(
+                trace.ppm, y, color=trace.color, linewidth=width,
+                linestyle=trace.line_style, label=trace.label,
+            )
+            drawn.append((trace, y))
+
+        # ppm axes are conventionally DESCENDING (high ppm on the left).
+        if self._ppm_range is not None:
+            left, right = self._ppm_range
+        else:
+            left = max(float(np.nanmax(t.ppm)) for t in visible)
+            right = min(float(np.nanmin(t.ppm)) for t in visible)
+        self._axes.set_xlim(left, right)
+
+        # Y limits come from the RAW data envelope (no per-trace scale or
+        # offset applied), giving a STABLE frame that scaling is visible
+        # against: scale a trace up and its peaks grow within the frame.
+        #
+        # An earlier version pinned the limits to whatever was first drawn and
+        # never recomputed them. That made scaling visible but broke badly in
+        # both directions -- scale down and the spectrum shrank to an invisible
+        # line, scale up and it shot off the top with no way back. The frame is
+        # now recomputed whenever the SET of traces changes (load, remove,
+        # clear, arrangement) but deliberately NOT when scale or offset change.
+        if self._y_limits is None:
+            self._y_limits = self._frame_y_limits(visible, offset_step)
+        if self._y_limits is not None:
+            self._axes.set_ylim(*self._y_limits)
+
+        self._axes.set_xlabel("ppm")
+        if self._arrangement == self.ARRANGEMENT_STACKED:
+            self._axes.set_yticks([])
+
+        if self._show_grid:
+            # Deliberately faint: a grid on a spectrum is a reading aid, not a
+            # feature of the data, so it must not compete with the peaks.
+            # X ONLY: a horizontal grid in a stacked plot cuts across every
+            # spectrum and reads as part of the data. The ppm axis is the one
+            # a reader actually measures against.
+            if self._grid_spacing_ppm:
+                from matplotlib.ticker import MultipleLocator
+
+                self._axes.xaxis.set_major_locator(
+                    MultipleLocator(self._grid_spacing_ppm)
+                )
+            self._axes.grid(
+                True, axis="x", which="major",
+                linewidth=0.4, alpha=0.25, linestyle="-",
+            )
+            self._axes.grid(False, axis="y")
+        else:
+            self._axes.grid(False)
+
+        # Each spectrum's name sits at its own top-left, anchored in DATA
+        # coordinates on x but pinned relative to its own trace on y, so the
+        # label travels with its spectrum when stacked -- and is not dragged
+        # around by y-scaling the way a legend entry would be.
+        self._draw_trace_labels(drawn, left, right)
+
+        self._figure.tight_layout()
+        self._canvas.draw_idle()
+
+    def _frame_y_limits(self, visible, offset_step: float):
+        """The stable vertical frame, from RAW intensities.
+
+        Deliberately ignores each trace's y_scale and y_offset: those are what
+        the user adjusts *within* the frame, so folding them in here would
+        cancel out the very effect they are meant to have.
+        """
+        if not visible:
+            return None
+        lows, highs = [], []
+        for i, trace in enumerate(visible):
+            data = trace.intensity
+            if data.size == 0:
+                continue
+            base = offset_step * i
+            lows.append(float(np.nanmin(data)) + base)
+            highs.append(float(np.nanmax(data)) + base)
+        if not lows:
+            return None
+        low, high = min(lows), max(highs)
+        if not np.isfinite(low) or not np.isfinite(high):
+            return None
+        if high == low:
+            pad = 1.0 if high == 0 else abs(high) * 0.1
+        else:
+            pad = (high - low) * 0.08
+        return (low - pad, high + pad)
+
+    def _draw_trace_labels(self, drawn, left: float, right: float) -> None:
+        """Name each spectrum at a FIXED position, top-left, one per line.
+
+        Anchored in AXES-FRACTION coordinates, not data coordinates. An
+        earlier version placed each label at its trace's data maximum, which
+        meant scaling a spectrum dragged its label around the plot -- the
+        reported bug. Fraction coordinates pin the labels to the corner of the
+        axes regardless of scale, offset, or zoom.
+        """
+        if not drawn:
+            return
+        line_height = 0.045
+        for i, (trace, _y) in enumerate(drawn):
+            self._axes.text(
+                0.015, 0.985 - i * line_height, trace.label,
+                color=trace.color, fontsize=8,
+                ha="left", va="top",
+                transform=self._axes.transAxes,   # <- fixed, not data coords
+                clip_on=False,
+            )
+
+    def autoscale_traces(self, target_fraction: float = 0.9) -> None:
+        """Scale each spectrum individually so they are all actually visible.
+
+        Without this, one spectrum three orders of magnitude stronger than
+        another forces the weak one to a flat line -- the frame has to fit the
+        strong one. Each trace is scaled so its own peak reaches the same
+        fraction of the frame, which is what makes a comparison legible. The
+        scales stay adjustable afterwards; this only sets a sane starting
+        point.
+        """
+        visible = [t for t in self._traces if t.visible]
+        if not visible:
+            return
+        frame = self._frame_y_limits(visible, 0.0)
+        if frame is None:
+            return
+        span = frame[1] - frame[0]
+        if span <= 0:
+            return
+        target = span * target_fraction
+        for trace in visible:
+            peak = float(np.nanmax(np.abs(trace.intensity)))
+            if peak > 0 and np.isfinite(peak):
+                trace.y_scale = max(1e-6, min(target / peak, 1e9))
+        self._redraw()
+        self.tracesChanged.emit()
+
+    def move_to_bottom(self, index: int) -> None:
+        """Sit one spectrum's baseline on the bottom of the frame."""
+        if not (0 <= index < len(self._traces)):
+            return
+        trace = self._traces[index]
+        frame = self._y_limits or self._frame_y_limits(
+            [t for t in self._traces if t.visible], 0.0
+        )
+        if frame is None:
+            return
+        baseline = float(np.nanmin(trace.intensity)) * trace.y_scale
+        trace.y_offset = frame[0] - baseline
+        self._redraw()
+        self.tracesChanged.emit()
+
+    def move_all_to_bottom(self) -> None:
+        """Every spectrum on a common baseline -- what 'overlay' means once
+        offsets have been used. Equivalent to clearing every offset."""
+        for i in range(len(self._traces)):
+            self.move_to_bottom(i)
+
+    def set_grid_spacing_ppm(self, spacing) -> None:
+        """Fixed grid spacing in ppm, or None to let matplotlib choose."""
+        if spacing is not None:
+            try:
+                spacing = float(spacing)
+            except (TypeError, ValueError):
+                return
+            if spacing <= 0 or not np.isfinite(spacing):
+                return
+        self._grid_spacing_ppm = spacing
+        self._redraw()
+
+    def grid_spacing_ppm(self):
+        return self._grid_spacing_ppm
+
+    def reset_y_limits(self) -> None:
+        """Recompute the y range from what is currently drawn."""
+        self._y_limits = None
+        self._redraw()
+
+    def apply_styles(self, styles: list[dict]) -> None:
+        """Install per-slot appearance and re-style existing spectra.
+
+        Slot i applies to the i-th loaded spectrum, so the mapping is the same
+        before and after anything is dropped.
+        """
+        if not styles:
+            return
+        self._slot_styles = list(styles)
+        for i, trace in enumerate(self._traces):
+            slot = self._slot_styles[i % len(self._slot_styles)]
+            trace.color = slot["color"]
+            trace.line_style = slot["style"]
+            trace.line_width = slot["width"]
+        self._redraw()
+        self.tracesChanged.emit()
+
+    def slot_styles(self) -> list[dict]:
+        return [dict(s) for s in self._slot_styles]
+
+    def set_grid_visible(self, visible: bool) -> None:
+        self._show_grid = bool(visible)
+        self._redraw()
+
+    def grid_visible(self) -> bool:
+        return self._show_grid
+
+    def set_trace_line_style(self, index: int, style: str) -> None:
+        """Solid / dashed / dotted / dash-dot, per trace."""
+        if not (0 <= index < len(self._traces)):
+            return
+        if style not in LINE_STYLES.values():
+            return
+        self._traces[index].line_style = style
+        self._redraw()
+
+    # -- cursor crosshair and drag-to-move -----------------------------------
+
+    def set_crosshair_enabled(self, enabled: bool) -> None:
+        self._crosshair_enabled = bool(enabled)
+        if not enabled:
+            self._clear_crosshair()
+
+    def _clear_crosshair(self) -> None:
+        if self._crosshair is not None:
+            for artist in self._crosshair:
+                try:
+                    artist.remove()
+                except (ValueError, NotImplementedError):
+                    pass
+            self._crosshair = None
+            self._canvas.draw_idle()
+
+    def _on_mouse_move(self, event) -> None:
+        # Dragging the selected trace takes precedence over the crosshair.
+        if self._drag_start is not None and event.inaxes is self._axes:
+            self._continue_drag(event)
+            return
+        if event.inaxes is not self._axes:
+            self._clear_crosshair()
+            return
+        if not getattr(self, "_crosshair_enabled", True):
+            return
+        self._clear_crosshair()
+        vline = self._axes.axvline(
+            event.xdata, color="#888888", linewidth=0.6, linestyle="--", alpha=0.8
+        )
+        hline = self._axes.axhline(
+            event.ydata, color="#888888", linewidth=0.6, linestyle="--", alpha=0.8
+        )
+        self._crosshair = (vline, hline)
+        self.cursorMoved.emit(float(event.xdata), float(event.ydata))
+        self._canvas.draw_idle()
+
+    def _on_mouse_press(self, event) -> None:
+        """Begin dragging the selected trace vertically.
+
+        Only in stacked mode and only with a trace selected: dragging in
+        overlay would be ambiguous about which spectrum is meant, and moving
+        one without a clear selection would feel arbitrary.
+        """
+        if event.inaxes is not self._axes or event.button != 1:
+            return
+        # Dragging works in BOTH arrangements. Restricting it to stacked (an
+        # earlier decision) meant the control silently did nothing in overlay,
+        # which reads as broken rather than as a deliberate limitation. The
+        # selection makes the target unambiguous either way.
+        trace = self.selected_trace()
+        if trace is None or event.ydata is None:
+            return
+        self._drag_start = (float(event.ydata), trace.y_offset)
+
+    def _continue_drag(self, event) -> None:
+        if event.ydata is None:
+            return
+        start_y, start_offset = self._drag_start
+        index = self._selected_index
+        if index is None:
+            return
+        self._traces[index].y_offset = start_offset + (float(event.ydata) - start_y)
+        self._redraw()
+
+    def _on_mouse_release(self, event) -> None:
+        if self._drag_start is not None:
+            self._drag_start = None
+            self.tracesChanged.emit()
+
+    def _on_mouse_leave(self, event) -> None:
+        self._clear_crosshair()
+
+    # -- drag and drop -------------------------------------------------------
+    #
+    # dragEnterEvent MUST call acceptProposedAction() or dropEvent never fires
+    # -- the single most common Qt drag-and-drop mistake.
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasFormat(MIME_DATASET):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:
+        if event.mimeData().hasFormat(MIME_DATASET):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:
+        if self.handle_mime_data(event.mimeData()):
+            event.acceptProposedAction()
+
+    def handle_mime_data(self, mime) -> bool:
+        """Decode a dataset payload and queue every entry.
+
+        Separate from dropEvent so tests can exercise it with a plain
+        QMimeData, without constructing QDropEvent objects whose signature
+        varies between Qt versions.
+        """
+        if not mime.hasFormat(MIME_DATASET):
+            return False
+        try:
+            payload = json.loads(bytes(mime.data(MIME_DATASET)).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return False
+        if not payload:
+            return False
+        for item in payload:
+            self.add_dataset(
+                item["path"],
+                item.get("label") or Path(item["path"]).name,
+                int(item.get("dimensionality", 1)),
+            )
+        return True

@@ -1,0 +1,31 @@
+HelSpin — third-party components
+================================
+
+HelSpin depends on the following, each under its own licence. Their terms
+govern their own code and are not altered by HelSpin's licence.
+
+PySide6 / Qt          LGPL v3 (also available under GPL and commercially)
+                      https://www.qt.io/licensing
+                      Qt is used as a shared library and is NOT statically
+                      linked, so a recipient may replace it with a modified
+                      build. Source for the Qt version distributed with a
+                      HelSpin binary is available from the Qt Project, and
+                      on request from the HelSpin authors.
+
+nmrglue               New BSD (3-clause)
+numpy                 BSD 3-clause
+scipy                 BSD 3-clause. Binary builds bundle OpenBLAS (BSD
+                      3-clause), libgfortran (GPL v3 WITH GCC Runtime Library
+                      Exception, which permits use in non-GPL programs) and
+                      libquadmath (LGPL v2.1, dynamically linked).
+matplotlib            Matplotlib licence (PSF-style, BSD-compatible). Bundles
+                      fonts under OFL-1.1 and the BaKoMa font licence.
+
+Full licence texts are installed alongside each package and can be printed
+with:
+
+    python -m pip show -f <package>
+
+If HelSpin is redistributed as a bundled installer, that bundle MUST be built
+one-directory (not one-file) so the Qt libraries remain replaceable, and must
+ship this NOTICE and the LGPL text. See docs in HANDOFF.md.
