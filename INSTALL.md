@@ -10,10 +10,13 @@ packaged end-user installer (no `.app` / `.exe`, no code signing).
 
 ## Requirements
 
-- **Python 3.11 or newer**, on Windows 11 or macOS 13+ (Linux also works if
-  you're testing this on a dev machine).
-- No other software needed — everything else (Qt, matplotlib, nmrglue) installs
-  automatically via pip.
+- **Python 3.11 or newer**, on Windows 11, macOS 13+, or Linux.
+- No other software needed on Windows and macOS — everything else (Qt,
+  matplotlib, nmrglue) installs automatically via pip.
+- **On Linux, one system library is needed first.** See
+  [Linux: one extra step](#linux-one-extra-step) below — without it the app
+  fails to start with a Qt platform plugin error. This is the single most
+  common Linux install failure and it is not something pip can fix.
 
 Check your Python version first:
 
@@ -130,6 +133,185 @@ source .venv/bin/activate      # macOS/Linux
 .venv\Scripts\Activate.ps1     # Windows
 helspin
 ```
+
+---
+
+## Linux: one extra step
+
+Everything above works on Linux unchanged, with one addition that has to come
+**before** the first run.
+
+### The Qt library pip cannot install
+
+PySide6's wheel bundles almost all of Qt, but not `libxcb-cursor.so.0`, which
+Qt 6.5 made a hard requirement of its X11 plugin. If it is missing, HelSpin
+does not start and prints:
+
+```
+qt.qpa.plugin: Could not load the Qt platform plugin "xcb" in "" even though
+it was found.
+This application failed to start because no Qt platform plugin could be
+initialized.
+```
+
+The message is misleading — the plugin *is* there; a library it depends on is
+not. Install it with your distribution's package manager:
+
+```
+# Debian, Ubuntu, Mint
+sudo apt install libxcb-cursor0
+
+# Fedora, RHEL, Rocky
+sudo dnf install xcb-util-cursor
+
+# openSUSE
+sudo zypper install libxcb-cursor0
+
+# Arch, Manjaro
+sudo pacman -S xcb-util-cursor
+```
+
+On a minimal or container image you may also need the wider X11 set:
+
+```
+sudo apt install libgl1 libegl1 libxkbcommon-x11-0 libdbus-1-3 \
+                 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0
+```
+
+To see exactly which library is missing rather than guessing:
+
+```
+QT_DEBUG_PLUGINS=1 helspin 2>&1 | grep "cannot open shared object"
+```
+
+That prints the offending `.so` by name, which maps directly onto a package.
+
+### Then install as normal
+
+The virtual-environment steps above are unchanged:
+
+```
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+helspin
+```
+
+conda works equally well and is the better choice if `/home` is on a slow NFS
+mount:
+
+```
+conda create -n helspin python=3.11
+conda activate helspin
+pip install -e .
+```
+
+### Wayland
+
+HelSpin runs on both X11 and Wayland. Under Wayland the dock icon comes from
+an installed desktop entry rather than from the application itself, so without
+the step below the window is correct while the dock shows a generic
+placeholder. Install the entry:
+
+```
+mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/512x512/apps
+cp packaging/helspin.desktop ~/.local/share/applications/
+cp helspin/resources/icon.png \
+   ~/.local/share/icons/hicolor/512x512/apps/helspin.png
+update-desktop-database ~/.local/share/applications 2>/dev/null || true
+```
+
+HelSpin then appears in the applications menu and the dock icon is correct.
+This is optional — it affects appearance only, never whether the app runs.
+
+If a Wayland session gives you trouble, forcing X11 is a useful way to find
+out whether Wayland is the cause:
+
+```
+QT_QPA_PLATFORM=xcb helspin
+```
+
+### Mounting the spectrometer share
+
+HelSpin reads Bruker data straight off a mounted share; it does not copy
+anything and never writes to it. Mount it first, then point **File → Add Data
+Root…** at the mount point.
+
+```
+# SMB/CIFS, as your own user so file ownership is right
+sudo mount -t cifs //spectrometer/data /mnt/nmr \
+     -o username=YOURNAME,uid=$(id -u),gid=$(id -g),ro
+
+# NFS
+sudo mount -t nfs spectrometer:/export/data /mnt/nmr
+```
+
+Mounting read-only (`ro`) is worth doing: HelSpin has no reason to write
+there, and it removes any possibility of a mistake reaching the raw data.
+
+**Symlinks are followed.** If your root is a folder of links to the real
+mounts — `~/nmr/spect600 -> /mnt/raw/spect600` — HelSpin walks through them.
+Links that point back at a parent are detected and not followed twice, so a
+loop cannot hang the scan.
+
+### Where HelSpin keeps its files
+
+| What | Location |
+|---|---|
+| Settings (data roots, display preferences) | `~/.config/HelSpin/HelSpin.conf` |
+| Index cache, licence, trial record | `~/.cache/helspin/` |
+
+`XDG_CACHE_HOME` is honoured if set, which matters when `/home` is a slow
+network mount — the cache belongs on local disk, not back on the share it is
+caching. Override it explicitly with `HELSPIN_CACHE_DIR` if you prefer.
+
+Deleting `~/.cache/helspin/` is safe: it is rebuilt on the next scan.
+
+### Linux-specific troubleshooting
+
+**Nothing appears, no error.** Check for a leftover `QT_QPA_PLATFORM` in your
+shell:
+
+```
+echo $QT_QPA_PLATFORM        # if this says "offscreen", that is the cause
+unset QT_QPA_PLATFORM
+```
+
+This has cost real debugging time on this project before — it renders the app
+to nowhere, silently and successfully.
+
+**Over SSH**, X11 forwarding is needed for a window (`ssh -X`). Without a
+display, the parts that do not need one still work:
+
+```
+helspin --version
+helspin --check /mnt/nmr/SOME-SAMPLE
+```
+
+**Blurry or tiny on a HiDPI screen.** Qt scales automatically, but a mixed-DPI
+multi-monitor setup sometimes needs a nudge:
+
+```
+QT_ENABLE_HIGHDPI_SCALING=1 helspin
+QT_SCALE_FACTOR=1.5 helspin          # or set it manually
+```
+
+**A sample is missing from the tree.** Ask HelSpin what it sees on disk rather
+than guessing:
+
+```
+helspin --check /mnt/nmr/THE-SAMPLE
+```
+
+That reports, experiment by experiment, whether a plottable spectrum is
+actually there. Note that Bruker filenames (`acqus`, `pdata`, `1r`) are
+lowercase and Linux filesystems are case-sensitive — data copied from a
+Windows machine by a tool that changed case will not be recognised. `ls` in
+the expno directory will show this immediately.
+
+**Permission denied on the share.** Confirm you can read it outside HelSpin
+first — `ls /mnt/nmr` — since an unreadable subtree is stepped over silently
+by design, so that one locked folder does not cost you the rest of the share.
 
 ---
 

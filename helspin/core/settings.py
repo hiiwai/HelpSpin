@@ -84,60 +84,6 @@ def save_data_roots(roots: list[DataRoot]) -> None:
 _STYLES_KEY = "plot/slot_styles"
 
 
-def load_slot_styles() -> list[dict] | None:
-    """Saved per-slot plot appearance, or None if nothing has been saved.
-
-    Returns None rather than defaults so the caller can tell "never
-    configured" from "configured to look like the defaults". Malformed stored
-    values degrade to None instead of raising -- a corrupt settings file must
-    not stop the app from starting.
-    """
-    raw = _settings().value(_STYLES_KEY, "")
-    if not raw:
-        return None
-    try:
-        parsed = json.loads(raw)
-    except (ValueError, TypeError):
-        return None
-    if not isinstance(parsed, list) or not parsed:
-        return None
-    out = []
-    for entry in parsed:
-        if not isinstance(entry, dict):
-            return None
-        try:
-            out.append(
-                {
-                    "color": str(entry["color"]),
-                    "style": str(entry["style"]),
-                    "width": float(entry["width"]),
-                }
-            )
-        except (KeyError, TypeError, ValueError):
-            return None
-    return out
-
-
-def save_slot_styles(styles: list[dict]) -> None:
-    """Persist per-slot plot appearance so it is the default next run."""
-    try:
-        payload = json.dumps(
-            [
-                {
-                    "color": str(s["color"]),
-                    "style": str(s["style"]),
-                    "width": float(s["width"]),
-                }
-                for s in styles
-            ]
-        )
-    except (KeyError, TypeError, ValueError):
-        return
-    settings = _settings()
-    settings.setValue(_STYLES_KEY, payload)
-    settings.sync()
-
-
 _STYLES_KEY = "appearance/slot_styles"
 
 

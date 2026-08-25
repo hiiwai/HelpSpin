@@ -126,7 +126,12 @@ class Trace:
     rg: float = 0.0
     label_offset: tuple[float, float] = (0.0, 0.0)
     label_base_pos: tuple[float, float] | None = None
-    label_dx: float = 0.0     # extra label offset, axes fractions
+    # Vestigial: a second, older label-offset mechanism whose setter was
+    # shadowed by the label_offset one below and so never ran. Kept at 0.0
+    # and still added when drawing, because the undo snapshot and saved
+    # sessions from earlier versions carry the field; removing it would make
+    # an old .helspin file fail to restore. Do not wire anything new to it.
+    label_dx: float = 0.0     # always 0; see note above
     label_dy: float = 0.0
     is_difference: bool = False
     # How a derived trace was made. A difference has no file behind it, so
@@ -1783,7 +1788,13 @@ class SpectrumCanvas(QWidget):
         self._clear_crosshair()
 
         path = str(path)
-        suffix = path.rsplit(".", 1)[-1].lower() if "." in path else "png"
+        # Path().suffix, NOT a manual rsplit on ".": a dot anywhere in the
+        # path -- a versioned folder, "OneDrive - Company Corp", a dotted user
+        # name -- makes rsplit return a fragment of a DIRECTORY name as the
+        # format ("2/figure" for /data/v1.2/figure), which matplotlib then
+        # rejects. request_save_image already learned this; this is the same
+        # bug in its sibling, reachable by any direct caller.
+        suffix = Path(path).suffix.lstrip(".").lower() or "png"
         facecolor = "none" if transparent else "white"
 
         # matplotlib converts text to outlines by default in vector output,
@@ -1906,26 +1917,6 @@ class SpectrumCanvas(QWidget):
         self._redraw()
         self.tracesChanged.emit()
         return True
-
-    def set_label_offset(self, index: int, dx: float, dy: float) -> None:
-        """Nudge one spectrum's name by an explicit amount, in axes fractions.
-
-        Dragging is the quick way; this is the reliable, repeatable one --
-        typed values survive a rebuild of the plot and can be dialled in
-        precisely, which dragging on a dense spectrum cannot.
-        """
-        if not (0 <= index < len(self._traces)):
-            return
-        try:
-            dx = float(dx)
-            dy = float(dy)
-        except (TypeError, ValueError):
-            return
-        if not (np.isfinite(dx) and np.isfinite(dy)):
-            return
-        self._traces[index].label_dx = dx
-        self._traces[index].label_dy = dy
-        self._redraw()
 
     def set_show_pulse_program(self, show: bool) -> None:
         self._show_pulprog = bool(show)

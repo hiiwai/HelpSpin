@@ -49,7 +49,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import __version__
+from . import CONTACT_EMAIL, __version__
 from .core.settings import (
     load_data_roots,
     load_display_prefs,
@@ -792,15 +792,20 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _about(self) -> None:
+        # QMessageBox.about() renders rich text when it detects markup, which
+        # is what makes the address a clickable mailto link. Plain text would
+        # leave the user to retype it by hand from a dialog they cannot copy
+        # out of easily.
         QMessageBox.about(
             self,
             f"About {APP_TITLE}",
-            f"{APP_TITLE} {__version__}\n\n"
-            "Written and developed by H. Iw-ai\n"
-            "Copyright \u00a9 2026 H. Iw-ai. All rights reserved.\n\n"
-            "Compare Bruker NMR spectra and build publication figures.\n\n"
-            "Free for academic research, teaching and personal use; "
-            "commercial use requires a licence. See Help \u2192 Licence.",
+            f"<p><b>{APP_TITLE} {__version__}</b></p>"
+            "<p>Written and developed by H. Iw-ai<br>"
+            "Copyright \u00a9 2026 H. Iw-ai. All rights reserved.</p>"
+            "<p>Compare Bruker NMR spectra and build publication figures.</p>"
+            "<p>Free for academic research, teaching and personal use; "
+            "commercial use requires a licence. See Help \u2192 Licence.</p>"
+            f'<p>Contact: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a></p>',
         )
 
 
@@ -887,6 +892,32 @@ def _claim_windows_taskbar_identity() -> None:
         pass
 
 
+def _claim_linux_desktop_identity(app) -> None:
+    """Tell a Linux desktop which .desktop file describes this process.
+
+    The Linux counterpart of the Windows AppUserModelID above, and needed for
+    the same reason. Under Wayland a compositor does NOT take the dock or
+    Alt-Tab icon from setWindowIcon() at all -- it looks up the application ID
+    in the installed .desktop files and takes the icon from there. Without
+    this the window title bar is correct while the dock shows a generic
+    placeholder, which reads as "the icon is broken" rather than "the desktop
+    entry is missing".
+
+    Guarded to Linux rather than set everywhere. Qt ignores it on macOS and
+    Windows, so calling it there would very probably be harmless -- but
+    "probably harmless" is not a reason to alter application identity on the
+    platform this is developed and mainly used on. On X11 it sets WM_CLASS,
+    which is what icon themes and window rules match against; on Wayland it is
+    the only route to a correct dock icon. Neither concept exists on macOS.
+
+    The .desktop file need not be installed for this to be safe: an
+    uninstalled run simply falls back to the window icon, as before.
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    app.setDesktopFileName("helspin")
+
+
 def main() -> int:
     args = _parse_args(sys.argv[1:])
     if getattr(args, "check", None):
@@ -900,6 +931,7 @@ def main() -> int:
 
     _claim_windows_taskbar_identity()
     app = QApplication.instance() or QApplication(sys.argv)
+    _claim_linux_desktop_identity(app)
     # Set on the APPLICATION as well as the window: Windows uses this for the
     # taskbar entry and Alt-Tab, and a window-only icon leaves those blank.
     app.setWindowIcon(app_icon())

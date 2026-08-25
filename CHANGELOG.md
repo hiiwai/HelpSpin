@@ -21,6 +21,268 @@ build can be traced back to a specific entry here.
 > pre-rendering — `0.1.0` (no suffix) is now reserved for when rendering
 > works. `0.0.1` corresponds to what was previously built as `0.1.0.dev1`.
 
+## [0.5.9] — 2026-08-25
+
+### Contact address
+
+`iwai@ligsciss.com` now appears in **Help → About**, as a clickable mailto
+link (the dialog was switched to rich text for this — a plain-text address in
+a dialog you cannot easily copy out of means retyping it by hand).
+
+It is also in the **licence**, which mattered more than the About box. Section
+2 previously read "To enquire about a commercial licence, contact the
+copyright holder, H. Iw-ai" and gave no way to do so — the commercial route
+had no entry point at all. Both `LICENSE` and the shipped
+`helspin/resources/LICENSE.txt` were updated, and a test now asserts the two
+stay byte-identical, since the packaged build shows the resources copy and a
+silent divergence would leave users reading the stale one.
+
+The address is defined once, as `helspin.CONTACT_EMAIL`, so About and the
+licence cannot drift apart.
+
+### Linux compatibility
+
+The app already ran on Linux; this release is the result of auditing it
+properly rather than assuming. Verified by launching against a real X11
+display, not the offscreen platform the test suite uses.
+
+**Symlinked data was invisible — the one finding that would have cost real
+data.** All three directory walkers used `is_dir(follow_symlinks=False)`. A
+data root holding links to the real instrument mounts —
+`~/nmr/spect600 -> /mnt/raw/spect600`, an ordinary Linux and macOS
+arrangement — reported *nothing* under them: no error, no dimmed row, just an
+apparently empty share. The two walkers also disagreed with each other, one
+following links and the other not, so the answer depended on which code path
+asked.
+
+Symlinks are now followed, with `(device, inode)` tracking so a link pointing
+at an ancestor is not descended twice. Identity comes from the filesystem, not
+from comparing resolved path strings: two paths can name one directory, and on
+a network mount the resolved text can differ between runs. `scan_expnos` was
+changed to match — otherwise a sample recognised *through* a linked expno
+would have listed zero experiments, a row that opens onto nothing.
+
+Six tests cover this: linked mount found, linked expno listed, ancestor loop
+terminates without duplicates, two links to one directory yield one result,
+broken link does not abort the scan, and the two walkers agree.
+
+**Wayland dock icon.** A Wayland compositor ignores `setWindowIcon()` entirely
+and takes the dock icon from an installed desktop entry, so the title bar was
+correct while the dock showed a placeholder. Added
+`_claim_linux_desktop_identity()` — the Linux counterpart to the Windows
+`AppUserModelID` already handled — plus `packaging/helspin.desktop` carrying
+`StartupWMClass`, which is what matches an already-running window back to the
+entry rather than giving it a second, iconless dock item.
+
+**`XDG_CACHE_HOME` is honoured.** Where `/home` is a slow NFS mount, this is
+routinely redirected to local disk; ignoring it wrote the cache of a network
+mount back onto the network, the one placement that defeats its purpose.
+Relative values are ignored per the XDG spec. `HELSPIN_CACHE_DIR` still wins.
+
+**Audited and found correct, no change needed:** QSettings paths, matplotlib
+(uses `backend_qtagg`, never pyplot, so no backend selection to get wrong),
+the monospace font fallback (`StyleHint.TypeWriter` resolves on a bare
+distro), `Ctrl+` shortcuts (Qt maps these to Cmd on macOS automatically), and
+the `os.name == "nt"` branch in `paths.py`. Bruker writes `acqus`, `pdata` and
+`1r` in lowercase consistently, so exact-case matching is right on a
+case-sensitive filesystem — INSTALL.md notes the one way this bites, data
+copied from Windows by a tool that changed case.
+
+### Fixed: image export under a dotted directory
+
+`request_save_image` carefully used `Path(path).suffix`, with a comment
+explaining why a manual split was wrong. Its sibling `save_image` then did
+`path.rsplit(".", 1)[-1]` — the exact bug the comment warns about. Saving to
+`/data/v1.2/figure` read `2/figure` as the image format and matplotlib
+rejected it. Reachable by any direct caller; the dialog route was already
+safe.
+
+### Also found: a method that shadowed another
+
+`SpectrumCanvas.set_label_offset` was defined twice. The second definition —
+the live one, which sets `label_offset` and `label_pos` and emits
+`tracesChanged` — silently replaced the first, whose `label_dx`/`label_dy`
+fields therefore stayed at zero forever. No user-visible fault, because the
+surviving implementation is the correct one, but anyone reading the first
+definition would have been reading dead code.
+
+The shadowed definition is removed. The two fields are kept, documented and
+still added when drawing (they are zero, so this changes nothing): they appear
+in the undo snapshot and in saved sessions, and removing them would stop an
+older `.helspin` file restoring.
+
+### INSTALL.md
+
+A full Linux section: the `libxcb-cursor0` requirement and its per-distro
+package names, `QT_DEBUG_PLUGINS=1` for diagnosing the next missing library by
+name, venv and conda routes, Wayland desktop-entry installation, SMB and NFS
+mount commands (read-only, since HelSpin never writes to the share), where
+settings and cache live, and Linux-specific troubleshooting including the
+`QT_QPA_PLATFORM=offscreen` trap that has cost this project debugging time
+before.
+
+### Discovery speed: back to the 0.5.8 cost, measured
+
+Browsing speed is what this application is for, so the symlink change was
+benchmarked against 0.5.8 rather than assumed free. It was not free, twice
+over.
+
+**One round trip per directory.** `DirEntry.stat()` is a real filesystem
+round trip, unlike `is_dir()` and `is_symlink()`, which answer from the
+directory listing already read. Loop protection called stat on every child
+directory: on a synthetic 400-sample share that measured **448 extra stat
+calls where 0.5.8 made none** — roughly a second over SMB, spent on nothing
+for the overwhelming majority of shares, which contain no symlinks at all.
+
+Only a symlink can create a cycle, so only a symlink now pays for a stat.
+`is_symlink()` is free, so the check that decides costs nothing.
+
+**One round trip per sample.** The first correction introduced a worse one:
+de-duplicating *results* by resolved path meant a single link anywhere on a
+share cost one resolve per sample found. Fixed by testing the link instead of
+the results — a link whose target lies inside the root is not followed at all,
+because everything under it is reachable by its real path anyway. That is also
+what bounds a self-referential link, and it costs one resolve per link.
+
+Measured, same 400-sample tree, discovery only:
+
+| Share | 0.5.8 | first attempt | shipped |
+|---|---|---|---|
+| 400 samples, no symlinks | 0 | 448 | **0** |
+| 395 samples + 5 symlinks | 0 | 405 | **11** |
+| 400 symlinks (worst case) | 0 | 800 | 801 |
+
+Directory listings are unchanged throughout at 498, so the walk itself costs
+what it always did. The last row is a share made entirely of links, where each
+one genuinely has to be resolved; the cost is proportional to links, which is
+the most that can be said for it.
+
+Two tests hold the line: a symlink-free tree must cost **exactly zero** stat
+calls, and one link among twenty-one samples must cost at most three path
+resolutions.
+
+### macOS: verified unchanged, after fixing a regression found doing so
+
+macOS is the primary platform, so the Linux work above was re-checked against
+it rather than assumed safe. One serious regression turned up, introduced by
+this release's own symlink change.
+
+**Directory de-duplication would have emptied an SMB share.** Loop protection
+was keyed on `(st_dev, st_ino)` for every directory. Several network
+filesystems — some SMB/CIFS and FUSE mounts among them — report `st_ino` as 0
+for *every* entry. Every directory on such a share therefore had the same
+identity, so the walk kept the first sample and silently discarded the rest: a
+share holding four hundred samples would have shown one. macOS reaches
+spectrometer shares over SMB, so this was squarely aimed at the main platform.
+
+Fixed by only trusting an identity the filesystem actually provides: a real
+inode is used where there is one; where there is not, a symlink falls back to
+its resolved path (enough to break a self-referential loop, which is the case
+that must not run forever) and a real directory is not tracked at all. A tree
+of real directories cannot contain a cycle, so nothing is lost by that. Two
+tests now cover it, including a simulated inode-less share.
+
+**`setDesktopFileName` is now guarded to Linux.** It was being called on every
+platform. Qt almost certainly ignores it on macOS — but "almost certainly
+ignored" is not a reason to alter application identity on the platform the
+project is developed and mainly used on. A test asserts it is not called on
+darwin or win32, and the mirror-image case (the Windows taskbar call running
+on macOS) is asserted too.
+
+**Confirmed unchanged on macOS:** the cache location, including with
+`XDG_CACHE_HOME` set, which happens on a Mac with cross-platform dotfiles —
+the XDG branch is behind a `linux` guard and macOS still resolves to
+`~/.cache/helspin`. The `NoRole` fix that keeps "Quit" off the system app menu,
+and the `raise_()`/`activateWindow()` pair that stops a Python-launched window
+opening behind others, are both untouched. The About dialog's switch to rich
+text uses `QMessageBox.about`, which renders markup on all platforms.
+
+The honest limit: this was verified by reading the changed code paths,
+simulating each platform branch, and testing on Linux. **No macOS machine was
+available, so the Mac run is still yours to make.** The symlink change is the
+one to watch, and reverting it is documented in HANDOFF.md.
+
+### Removed: a second and third shadowed definition
+
+The same fault as `set_label_offset`, found by re-running the linter after the
+macOS pass: `load_slot_styles` and `save_slot_styles` were each defined twice
+in `core/settings.py`, the second silently replacing the first. The dead
+copies are removed; the live pair is untouched, so behaviour is identical.
+
+Worth knowing for later: the surviving `save_slot_styles` is the *less*
+defensive of the two. It writes `json.dumps(list(styles))` without coercing
+the fields, where the dead copy coerced colour, style and width and returned
+quietly on bad input. Callers only ever pass dicts built by the Preferences
+dialog, and `load_slot_styles` validates on the way back in, so nothing is
+broken — but it was not changed here, because tightening it is a behaviour
+change and this release had enough of those.
+
+### Removed: a residual employer identifier
+
+A sweep for proprietary identifiers found one the earlier scrub missed: a
+test fixture directory name in `test_browser_speed.py` that carried a
+compound-code prefix. Renamed to `260728_SampleC_50uM`, matching the neutral
+placeholders used everywhere else. The old name is deliberately not written
+out here — recording it in the changelog would put it straight back into the
+repository it was being removed from.
+
+It was present in all six commits, so the **git history was rewritten** — a
+file-level fix would have left it recoverable by anyone who cloned the
+repository. Every object in the pack, reachable or not, was then scanned to
+confirm it is gone. Commit hashes have therefore changed; tags were carried
+over to the rewritten commits.
+
+Everything else came back clean. Checked across all history: no occurrence of
+the employer name in any form, no internal hostnames, UNC paths or mount
+points, no real sample names, no usernames. Apparent matches in `logo.png`,
+`icon.png` and `icon.ico` are byte sequences inside compressed pixel data, not
+metadata — the images carry no text chunks at all. `Example Pharma Ltd` in the
+licence tests is a deliberate placeholder. The remaining `ABC-124`, `IW`,
+`Z:\nmr` and `D:\NMRdata` are illustrative placeholders in documentation and
+TopSpin-identifier parsing tests, not real values.
+
+### Speed: measured, not assumed
+
+Following symlinks means asking the filesystem questions the old walker never
+asked, and on a share every question is a network round trip. Measured against
+0.5.8 on an identical 400-sample tree, counting round trips rather than
+wall-clock time — local timings hide precisely the cost that matters remotely.
+
+| | 0.5.8 | 0.5.9 |
+|---|---|---|
+| Directory reads, no symlinks | 498 | **498** |
+| Extra stat calls, no symlinks | 0 | **0** |
+| Root of 8 linked mounts | 2 reads, **0 samples found** | 498 reads, **400 samples found** |
+| Extra stat calls, 8 links | — | **8** |
+
+The ordinary case is **unchanged, exactly**: one directory read per directory
+and not one stat more. The extra work is paid per *symlink*, not per
+directory, so it scales with the handful of links a root actually has rather
+than with the hundreds of directories under it. On a 3 ms link that is ~24 ms
+added to a scan of roughly 1.5 s — under 2%, and only when links are present.
+
+Two things make that possible and must not be undone:
+
+- **Only symlinks are stated.** `is_symlink()` is free — it comes from the
+  directory read — so the stat sits inside that branch and a link-free tree
+  never reaches it.
+- **The root is resolved once**, and a link pointing back inside it is not
+  followed at all, since everything under it is reachable by its real path
+  anyway. That single comparison replaces de-duplicating the *results*, which
+  would have cost a resolve per sample found — 400 round trips on a
+  400-sample share, the moment one link appeared anywhere.
+
+Tree expansion (`scan_expnos`, which runs on every click) still costs two
+directory reads per sample, unchanged.
+
+Two tests now hold this in place: one asserts zero stat calls on a
+symlink-free tree, the other that the count tracks the number of links rather
+than the number of directories.
+
+### Tests
+
+832, up from 800.
+
 ## [0.5.8] — 2026-08-04
 
 ### Y offset is a translation again, not a rescale

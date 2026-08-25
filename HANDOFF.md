@@ -374,6 +374,88 @@ Kept for a possible future "precise layout" mode. Do not assume they run.
 
 ---
 
+### 4.x  Directory walking follows symlinks, and must keep loop protection
+
+All three walkers used `is_dir(follow_symlinks=False)` until 0.5.9. That made
+a data root of links to the real instrument mounts — the normal Linux and
+macOS arrangement — report as empty, silently. No error, no dimmed row.
+
+They now follow symlinks and track visited directories by `(st_dev, st_ino)`.
+
+Three things not to undo:
+
+- **Identity, not path text.** Two paths can name one directory, and on a
+  network mount `resolve()` can return different text between runs. Comparing
+  resolved strings is not equivalent to comparing inodes.
+- **All three sites must agree.** `discover_samples`, `scan_for_samples`,
+  `_has_integer_child_dir` and `scan_expnos` all changed together. If
+  discovery counts a linked expno as evidence a directory is a sample but
+  `scan_expnos` excludes the same link, the sample appears in the tree and
+  opens onto nothing — worse than either consistent answer.
+- **The depth limit is not sufficient on its own.** It bounds a loop but does
+  not prevent it: without the `seen` set, `root/loop -> root` reports the same
+  sample once per level.
+
+If following symlinks ever causes a problem on a real share, the revert is
+narrow — restore `follow_symlinks=False` at the four sites and delete the
+`seen` sets — but the symptom it fixes will come back with it.
+
+### 4.v  Discovery must make ZERO stat calls on a symlink-free share
+
+There is a test asserting exactly this. It is not a style preference.
+
+`os.scandir` gives each entry a type flag from the directory read, so
+`is_dir()` and `is_symlink()` are free. `DirEntry.stat()` is not -- it is a
+round trip, and on a network share that is milliseconds. Calling it per
+directory cost 448 round trips on a 400-sample share, about a second, for no
+benefit on the shares that have no symlinks at all.
+
+The second trap is subtler and was worse: de-duplicating RESULTS by resolved
+path costs one resolve per sample, so one link anywhere made a whole share
+slow. Test the link, not the results -- a link resolving to somewhere inside
+the root is not followed, since everything under it is reachable by its real
+path. Cost then scales with links, which are rare, instead of with samples,
+which are the point.
+
+Before changing anything in `discover_samples` or `scan_for_samples`, run the
+two budget tests in `test_linux_compatibility.py`.
+
+### 4.w  Never de-duplicate directories on inode alone
+
+Loop protection for the symlink walk must use `_walk_identity`, which returns
+None when the filesystem gives no usable inode. Do not "simplify" it back to
+`(st_dev, st_ino)` for every entry.
+
+Some SMB/CIFS and FUSE mounts report `st_ino == 0` for every entry. Keying
+de-duplication on that makes every directory on the share identical, so the
+walk keeps the first and silently discards the rest — a four-hundred-sample
+share showing one, with no error. macOS reaches spectrometer shares over SMB,
+so this hits the primary platform hardest.
+
+Only symlinks can create a cycle, so a real directory that cannot be
+identified is simply not tracked. The helper is duplicated in
+`domain/paths.py` because the domain layer may not import core; keep both in
+step.
+
+### 4.y  Platform identity is set twice, for two different reasons
+
+`_claim_windows_taskbar_identity()` sets an AppUserModelID; without it Windows
+attributes the taskbar button to the host interpreter.
+`_claim_linux_desktop_identity()` sets the desktop file name; without it a
+Wayland compositor cannot find the icon at all, because it looks the app up in
+installed `.desktop` files rather than reading `setWindowIcon()`.
+
+These are not duplicates and neither is cosmetic-only in the same way. The
+Linux one also needs `packaging/helspin.desktop` installed with a matching
+`StartupWMClass`, or a running window gets a second, iconless dock entry.
+
+### 4.z  `Path(path).suffix`, never `rsplit(".", 1)`
+
+Fixed once in `request_save_image` and then found again, unfixed, in
+`save_image`. A dot anywhere in a path — `OneDrive - Company Corp`, `v1.2`, a
+dotted user name — makes `rsplit` return a fragment of a *directory* name as
+the file format. If a third one appears, this is the pattern.
+
 ## 5. Known bugs / limitations (as of 0.0.7)
 
 | Issue | Status |

@@ -323,9 +323,15 @@ def scan_expnos(sample_dir: str) -> list[ExpnoEntry]:
     out: list[ExpnoEntry] = []
     try:
         with os.scandir(sample_dir) as entries:
+            # Symlinks followed, to stay consistent with the discovery
+            # walk: if _has_integer_child_dir counted a linked expno as
+            # evidence that this directory IS a sample, then excluding the
+            # same link here would list that sample with zero experiments --
+            # a row that opens onto nothing, which is worse than either
+            # consistent answer.
             candidates = [
                 e for e in entries
-                if e.name.isdigit() and e.is_dir(follow_symlinks=False)
+                if e.name.isdigit() and e.is_dir()
             ]
     except OSError:
         return out
@@ -460,6 +466,65 @@ def sample_mtime(path: str) -> float:
 # --- tier 1: which directories are samples -----------------------------------
 
 
+def _link_identity(entry):
+    """Identity of a SYMLINK's target, for loop detection. None if unusable.
+
+    Called for symlinks ONLY, and that restriction is a performance rule as
+    much as a correctness one.
+
+    `DirEntry.stat()` is a real round trip -- unlike `is_dir()` and
+    `is_symlink()`, which answer from the directory read that has already
+    happened. Calling it on every child directory added roughly one round
+    trip per directory: on a 400-sample share that measured as 448 extra
+    stats, about a second over SMB, on the one operation this application
+    exists to make fast. Symlinks are rare, so paying it only for them costs
+    nothing on a share that has none.
+
+    It is also the correct restriction: a tree of real directories cannot
+    contain a cycle, so real directories never need identifying.
+
+    (device, inode) where the filesystem provides a real inode. Where it does
+    not -- some SMB/CIFS and FUSE mounts report st_ino as 0 for every entry --
+    the resolved path is used instead: weaker, since text can differ between
+    runs, but enough to break a self-referential loop, which is the case that
+    must not be allowed to run forever. None means the link is broken or its
+    target unreadable, and it is skipped.
+    """
+    try:
+        info = entry.stat()          # follows the link: we want the TARGET
+    except OSError:
+        return None                  # broken link, or unreadable target
+    if info.st_ino:
+        return (info.st_dev, info.st_ino)
+    try:
+        return os.path.realpath(entry.path)
+    except OSError:
+        return None
+
+
+def _sub_directories(directory: str):
+    """Child directories of ``directory``, symlinks included, sorted by name.
+
+    Symlinks ARE followed. On Linux and macOS a data root very often holds
+    symlinks to the real spectrometer mounts -- ``spect600 ->
+    /mnt/raw/spect600`` -- and skipping them made an entire instrument's data
+    silently invisible in the browser, with no error and no dimmed row to
+    suggest anything had been missed. Windows sees this far less often, which
+    is why it went unnoticed.
+
+    An unreadable directory yields nothing rather than raising: one
+    permission-denied subtree must not abort a scan of the whole share.
+    """
+    try:
+        with os.scandir(directory) as entries:
+            return sorted(
+                (e for e in entries if e.is_dir()),
+                key=lambda e: e.name,
+            )
+    except OSError:
+        return []
+
+
 def _has_integer_child_dir(path: str) -> bool:
     """True if this directory holds at least one integer-named subdirectory.
 
@@ -470,7 +535,10 @@ def _has_integer_child_dir(path: str) -> bool:
     try:
         with os.scandir(path) as entries:
             for child in entries:
-                if child.name.isdigit() and child.is_dir(follow_symlinks=False):
+                # follow_symlinks left at its default (True): an expno
+                # directory reached through a symlink is still an expno, and
+                # excluding it made the parent fail to register as a sample.
+                if child.name.isdigit() and child.is_dir():
                     return True
     except OSError:
         return False
@@ -514,28 +582,54 @@ def discover_samples(
     def stopped() -> bool:
         return should_stop is not None and should_stop()
 
+    # Symlink targets already followed, so two links to one directory do not
+    # walk it twice. Only symlinks are recorded: see _link_identity for why
+    # touching real directories here would be both unnecessary and slow.
+    seen_links: set = set()
+    # The root's own resolved path, computed once. A link whose target lies
+    # inside the root is not followed at all -- everything under it is already
+    # reachable by its real path, so following it could only produce
+    # duplicates. That single comparison replaces de-duplicating the results,
+    # which cost a resolve per sample found (400 round trips on a 400-sample
+    # share) the moment one link appeared anywhere.
+    try:
+        root_real = os.path.realpath(root)
+    except OSError:
+        root_real = root
+
     def walk(directory: str, remaining: int) -> bool:
         """False means: stop the whole walk (limit reached or cancelled)."""
         if remaining < 0:
             return True
         if stopped():
             return False
-        try:
-            with os.scandir(directory) as entries:
-                children = sorted(
-                    (e for e in entries if e.is_dir(follow_symlinks=False)),
-                    key=lambda e: e.name,
-                )
-        except OSError:
-            return True     # an unreadable subtree must not abort the scan
 
-        for child in children:
+        for child in _sub_directories(directory):
             if len(found) >= limit:
                 return False
             if stopped():
                 return False
             if child.name == "pdata":
                 continue
+            # is_symlink() is free -- it comes from the directory read. Only
+            # inside this branch is a stat paid for.
+            if child.is_symlink():
+                identity = _link_identity(child)
+                if identity is None:
+                    continue        # broken link: nothing to descend into
+                if identity in seen_links:
+                    continue        # this target has already been followed
+                seen_links.add(identity)
+                try:
+                    target = os.path.realpath(child.path)
+                except OSError:
+                    continue
+                # Pointing back inside the root: a loop, or a second name for
+                # something the walk reaches anyway. Skipping it is what
+                # bounds a self-referential link, and it costs one resolve
+                # per link rather than one per sample.
+                if target == root_real or target.startswith(root_real + os.sep):
+                    continue
             if _has_integer_child_dir(child.path):
                 emit(child.path)
                 continue    # a sample is a leaf for this purpose
@@ -599,6 +693,16 @@ def cache_dir() -> Path:
         local = os.environ.get("LOCALAPPDATA")
         if local:
             return Path(local) / "HelSpin" / "cache"
+    elif sys.platform.startswith("linux"):
+        # XDG_CACHE_HOME is the Linux equivalent of LOCALAPPDATA, and on a
+        # managed or shared machine it is frequently redirected away from the
+        # home directory -- to local disk when /home is a slow NFS mount, or
+        # to a tmpfs that is cleared at logout. Ignoring it writes a cache of
+        # a network mount onto the network, which is the one place it must not
+        # go. Relative values are ignored, as the spec requires.
+        xdg = os.environ.get("XDG_CACHE_HOME")
+        if xdg and os.path.isabs(xdg):
+            return Path(xdg) / "helspin"
     return Path.home() / ".cache" / "helspin"
 
 

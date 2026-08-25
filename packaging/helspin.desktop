@@ -1,0 +1,20 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=HelSpin
+GenericName=NMR Spectrum Viewer
+Comment=Compare Bruker NMR spectra and build publication figures
+Exec=helspin %f
+Icon=helspin
+Terminal=false
+Categories=Science;Chemistry;Education;Graphics;
+Keywords=NMR;Bruker;TopSpin;spectrum;spectra;spectroscopy;chemistry;
+MimeType=application/x-helspin-session;
+
+# StartupWMClass matches an ALREADY-RUNNING window back to this entry. Qt sets
+# the window's class from setDesktopFileName("helspin"), and without the two
+# agreeing a running HelSpin appears in the dock a second time, as a separate
+# iconless item -- the single most common complaint about Python GUI apps on
+# GNOME.
+StartupWMClass=helspin
+StartupNotify=true

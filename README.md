@@ -45,6 +45,17 @@ one or two levels above your samples is much faster than one near the drive
 root. If nothing is found, the status bar says so and states how deep it
 looked.
 
+## Installing on Linux
+
+See [INSTALL.md](INSTALL.md#linux-one-extra-step). One system library
+(`libxcb-cursor0` or your distribution's equivalent) must be installed before
+the first run — pip cannot supply it, and without it Qt fails to start with a
+misleading "platform plugin could not be initialized" message.
+
+Symlinked data roots are supported: if your root is a folder of links to the
+real instrument mounts, HelSpin walks through them, and links pointing back at
+a parent are detected rather than followed forever.
+
 ## Installing on Windows 11
 
 Development is macOS-first; Windows runs from a Python environment (there is
@@ -111,8 +122,10 @@ New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
 
 ### Where the index cache lives
 
-`%LOCALAPPDATA%\HelSpin\cache`. Delete it to force a full re-index; the app
-rebuilds it in the background.
+`%LOCALAPPDATA%\HelSpin\cache` on Windows, `~/.cache/helspin` on macOS and
+Linux (`XDG_CACHE_HOME` is honoured on Linux, which matters when `/home` is a
+network mount). Delete it to force a full re-index; the app rebuilds it in the
+background.
 
 ### Checking a dataset from the shell
 
@@ -316,6 +329,10 @@ troubleshooting a window that appears to hang or not start.
     appears if the user widens Name past the panel, rather than clipping.
 
 ## Licensing
+
+Free for academic research, teaching and personal use. Commercial use requires
+a licence — enquiries to **iwai@ligsciss.com**. The full terms are in
+[LICENSE](LICENSE), and are also readable inside the app at Help → Licence.
 
 Qt (via PySide6) is the only copyleft dependency: LGPLv3, which permits
 commercial sale. Package **one-dir, not one-file**, so Qt's shared libraries

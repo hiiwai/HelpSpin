@@ -330,11 +330,36 @@ def _has_integer_child_dir(entry_path: str) -> bool:
     try:
         with os.scandir(entry_path) as entries:
             for child in entries:
-                if child.name.isdigit() and child.is_dir(follow_symlinks=False):
+                # Symlinks followed: an expno reached through a link is
+                # still an expno, and excluding it stopped the parent from
+                # registering as a sample at all.
+                if child.name.isdigit() and child.is_dir():
                     return True
     except OSError:
         return False
     return False
+
+
+def _link_identity(entry):
+    """Identity of a symlink's target, for loop detection. None if unusable.
+
+    Duplicated from core.dataset_index._link_identity rather than imported:
+    the domain layer must not depend on core, which test_architecture
+    enforces. Keep the two in step. See that copy for the reasoning -- in
+    particular why this is called for symlinks only (a stat is a round trip,
+    and real directories cannot form a cycle) and why st_ino == 0 must fall
+    back to the resolved path.
+    """
+    try:
+        info = entry.stat()
+    except OSError:
+        return None
+    if info.st_ino:
+        return (info.st_dev, info.st_ino)
+    try:
+        return os.path.realpath(entry.path)
+    except OSError:
+        return None
 
 
 def scan_for_samples(
@@ -368,6 +393,16 @@ def scan_for_samples(
     if _has_integer_child_dir(str(root)):
         return [root], False
 
+    # Symlink targets already followed, plus the root's own resolved path. A
+    # link pointing back inside the root is not followed: everything under it
+    # is reachable by its real path anyway. One resolve per link, and nothing
+    # at all on a share without symlinks. See _link_identity above.
+    seen_links: set = set()
+    try:
+        root_real = os.path.realpath(root)
+    except OSError:
+        root_real = str(root)
+
     def walk(directory: str, remaining: int) -> bool:
         """Returns False when the limit is reached."""
         if remaining < 0:
@@ -375,7 +410,7 @@ def scan_for_samples(
         try:
             with os.scandir(directory) as entries:
                 children = sorted(
-                    (e for e in entries if e.is_dir(follow_symlinks=False)),
+                    (e for e in entries if e.is_dir()),
                     key=lambda e: e.name,
                 )
         except OSError:
@@ -386,6 +421,21 @@ def scan_for_samples(
                 return False
             if child.name == "pdata":
                 continue
+            # is_symlink() is free -- it comes from the directory read
+            # already done. Only inside this branch is a stat paid for.
+            if child.is_symlink():
+                identity = _link_identity(child)
+                if identity is None:
+                    continue        # broken link: nothing to descend into
+                if identity in seen_links:
+                    continue        # this target has already been followed
+                seen_links.add(identity)
+                try:
+                    target = os.path.realpath(child.path)
+                except OSError:
+                    continue
+                if target == root_real or target.startswith(root_real + os.sep):
+                    continue        # points back inside the root
             if _has_integer_child_dir(child.path):
                 samples.append(Path(child.path))
                 continue    # a sample is a leaf for this purpose
