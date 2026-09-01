@@ -374,6 +374,33 @@ Kept for a possible future "precise layout" mode. Do not assume they run.
 
 ---
 
+### 4.s  Y zoom: an explicit window outranks every automatic re-frame
+
+`_y_range` is the user's stated vertical window; `_y_limits` is a cache. Any
+code path that clears the cache (load, remove, arrangement change, x zoom,
+redraw) must leave `_y_range` alone. Getting this wrong means dropping in one
+more spectrum silently throws the user's zoom away -- the exact complaint
+`_ppm_range` already exists to avoid.
+
+Only three things may clear it: Fit Y (`reset_y_limits`), `reset_y_zoom`, and
+`clear()`.
+
+Two traps already sprung here, both now guarded by tests:
+
+- **`reset_y_limits` must push undo, but only when `_y_range` is set.**
+  Unconditional pushing fills the history with steps that restore nothing.
+  Not pushing at all means one click on Fit Y destroys a zoom permanently.
+- **Its undo key must NOT be `"y_zoom"`.** Sharing the key lets a Fit Y within
+  the coalescing window merge into the preceding wheel burst, so one undo
+  jumps past both and the zoom is unreachable.
+
+The wheel handler checks the zoom toggles BEFORE the selection check. Reverse
+that order and Y zoom is dead until a trace happens to be selected.
+
+Step handling is direction-only on purpose. matplotlib gives `angleDelta/120`
+(±1) on X11 but raw `pixelDelta` elsewhere, so a Windows touchpad sends 40 or
+120. Never raise the zoom factor to the step: 1.1**120 is a blank plot.
+
 ### 4.t  X offset obeys the same no-re-fit rule as Y offset
 
 `set_x_offset` must not clear `_ppm_range` or recompute the x limits. The

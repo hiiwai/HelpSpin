@@ -355,6 +355,15 @@ class SpectrumCanvas(QWidget):
         # _y_limits is, because the two describe one layout.
         self._stack_step: float | None = None
         self._zoom_mode = False
+        self._y_zoom_mode = False
+        # An EXPLICIT vertical window, set by the user with the Y zoom wheel
+        # or a drag. Deliberately NOT stored in _y_limits, which is a cache of
+        # the automatic frame and is cleared on almost every event (load,
+        # remove, arrangement change, x zoom) to force a recompute. A user's
+        # zoom must survive all of those, exactly as _ppm_range survives them
+        # on the horizontal axis. Putting the two in one field would mean
+        # every new spectrum silently threw the zoom away.
+        self._y_range: tuple[float, float] | None = None
         self._zoom_band = None      # (x0, y0, Rectangle) while dragging
         self._opacity = 1.0
         # Digits after the point in the cursor readouts. Two is enough to
@@ -526,6 +535,7 @@ class SpectrumCanvas(QWidget):
         self._f2_range = None
         self._selected_index = None
         self._y_limits = None
+        self._y_range = None    # an empty canvas has nothing to stay zoomed on
         self._redraw()
         self._emit_mode_if_changed()
         self.tracesChanged.emit()
@@ -668,11 +678,21 @@ class SpectrumCanvas(QWidget):
         return np.asarray(trace.ppm, dtype=float) + float(trace.x_offset)
 
     def _on_scroll(self, event) -> None:
-        """Wheel over the plot scales the selected trace vertically.
+        """Wheel over the plot: zoom, or scale the selected trace.
 
-        With nothing selected the wheel does nothing rather than silently
-        scaling an arbitrary trace -- guessing which spectrum the user meant
-        would be worse than requiring a click first.
+        Three jobs on one wheel, resolved by the two zoom toggles:
+
+        * either toggle on  -> zoom the view (both axes if both are on)
+        * neither on        -> scale the SELECTED trace vertically
+
+        The zoom checks come FIRST, and before the selection check, because
+        zooming applies to the whole view and must not require a spectrum to
+        be selected -- an earlier ordering would have made the new Y zoom
+        silently dead until the user happened to click a trace.
+
+        With no selection and no zoom mode the wheel does nothing, rather than
+        scaling an arbitrary trace: guessing which spectrum was meant would be
+        worse than requiring a click first.
         """
         step = getattr(event, "step", 0) or 0
         if step == 0:
@@ -682,7 +702,7 @@ class SpectrumCanvas(QWidget):
             return
         # ~10% per notch, direction following the scroll.
         factor = 1.1 if step > 0 else (1.0 / 1.1)
-        if self._zoom_mode:
+        if self._zoom_mode or self._y_zoom_mode:
             # Scrolling up magnifies, so the RANGE shrinks.
             self._zoom_about(event, 1.0 / factor)
             return
@@ -724,6 +744,7 @@ class SpectrumCanvas(QWidget):
             "arrangement": self._arrangement,
             "selected": self._selected_index,
             "y_limits": self._y_limits,
+            "y_range": self._y_range,
             "stack_step": self._stack_step,
         }
 
@@ -741,6 +762,10 @@ class SpectrumCanvas(QWidget):
         self._arrangement = snap["arrangement"]
         self._selected_index = snap["selected"]
         self._y_limits = snap["y_limits"]
+        # .get, not [], so a snapshot taken before this field existed (one
+        # already on the undo stack when a session was restored) still applies
+        # instead of raising KeyError halfway through an undo.
+        self._y_range = snap.get("y_range")
         self._stack_step = snap["stack_step"]
         self._redraw()
         self.tracesChanged.emit()
@@ -816,6 +841,58 @@ class SpectrumCanvas(QWidget):
     def zoom_mode(self) -> bool:
         return self._zoom_mode
 
+    def set_y_zoom_mode(self, enabled: bool) -> None:
+        """Wheel zooms the VERTICAL range, all spectra together.
+
+        Independent of the horizontal toggle rather than exclusive with it:
+        with both on the wheel zooms both axes at once, which is what the 2D
+        view has always done and is the obvious reading of two separate
+        switches. Turning this on does not disturb any zoom already applied.
+
+        Distinct from the wheel's default job of scaling the SELECTED trace.
+        That scales one spectrum against the others and changes their
+        relationship; this magnifies the whole view and changes nothing
+        between them.
+        """
+        self._y_zoom_mode = bool(enabled)
+
+    def y_zoom_mode(self) -> bool:
+        return self._y_zoom_mode
+
+    def y_range(self) -> tuple[float, float] | None:
+        """The explicit vertical window, or None when it is automatic."""
+        return self._y_range
+
+    def set_y_range(self, low: float, high: float) -> None:
+        """Pin the vertical window explicitly.
+
+        Rejects an inverted or degenerate pair rather than applying it: a
+        zero-height axis renders as a blank plot with no obvious way back,
+        which reads as the application having crashed.
+        """
+        try:
+            low, high = float(low), float(high)
+        except (TypeError, ValueError):
+            return
+        if not (np.isfinite(low) and np.isfinite(high)):
+            return
+        if high <= low:
+            return
+        self.push_undo("y_zoom")
+        self._y_range = (low, high)
+        self._redraw()
+        self.viewChanged.emit()
+
+    def reset_y_zoom(self) -> None:
+        """Hand the vertical axis back to automatic framing."""
+        if self._y_range is None:
+            return
+        self.push_undo("y_zoom")
+        self._y_range = None
+        self._y_limits = None
+        self._redraw()
+        self.viewChanged.emit()
+
     def set_trace_opacity(self, opacity: float) -> None:
         """Alpha for every plotted line and contour.
 
@@ -853,33 +930,79 @@ class SpectrumCanvas(QWidget):
         about the centre of the plot walks the peak of interest off the edge
         and turns one gesture into three.
         """
-        if event.xdata is None:
+        if event.xdata is None and event.ydata is None:
             return
         self.push_undo("zoom")
         if self.mode() == "2D":
-            f2 = self._f2_range or self.f2_bounds()
-            f1 = self._f1_range or self.f1_bounds()
-            if f2 is None or f1 is None:
-                return
-            self._f2_range = self._zoom_axis(f2[0], f2[1], float(event.xdata), factor)
-            if event.ydata is not None:
-                self._f1_range = self._zoom_axis(
-                    f1[0], f1[1], float(event.ydata), factor
-                )
+            self._zoom_2d(event, factor)
         else:
-            current = self._ppm_range or self.ppm_bounds()
-            if current is None:
-                return
-            left, right = self._zoom_axis(
-                current[0], current[1], float(event.xdata), factor
-            )
-            if left <= right:
-                return
-            self._ppm_range = (left, right)
-            self._y_limits = None
-            self._stack_step = None
+            self._zoom_1d(event, factor)
         self._redraw()
         self.viewChanged.emit()
+
+    def _zoom_2d(self, event, factor: float) -> None:
+        """Both ppm axes. F1 is the vertical one here, so the Y toggle drives
+        it -- but the horizontal toggle has always zoomed BOTH in 2D and that
+        is left exactly as it was, or turning Y zoom off would silently remove
+        behaviour people already rely on."""
+        f2 = self._f2_range or self.f2_bounds()
+        f1 = self._f1_range or self.f1_bounds()
+        if self._zoom_mode and f2 is not None and event.xdata is not None:
+            self._f2_range = self._zoom_axis(
+                f2[0], f2[1], float(event.xdata), factor
+            )
+        if (self._zoom_mode or self._y_zoom_mode) and f1 is not None \
+                and event.ydata is not None:
+            self._f1_range = self._zoom_axis(
+                f1[0], f1[1], float(event.ydata), factor
+            )
+
+    def _zoom_1d(self, event, factor: float) -> None:
+        """The ppm window and/or the intensity window, per the two toggles."""
+        if self._zoom_mode and event.xdata is not None:
+            current = self._ppm_range or self.ppm_bounds()
+            if current is not None:
+                left, right = self._zoom_axis(
+                    current[0], current[1], float(event.xdata), factor
+                )
+                # A descending axis that has collapsed or flipped would draw
+                # an empty plot; refusing leaves the view as it was.
+                if left > right:
+                    self._ppm_range = (left, right)
+                    # The horizontal window changing means the vertical
+                    # AUTOMATIC frame must be recomputed -- but an explicit
+                    # Y zoom is a stated intention and outranks that.
+                    if self._y_range is None:
+                        self._y_limits = None
+                        self._stack_step = None
+        if self._y_zoom_mode and event.ydata is not None:
+            low, high = self._current_y_window()
+            if low is not None:
+                new_low, new_high = self._zoom_axis(
+                    low, high, float(event.ydata), factor
+                )
+                if new_high > new_low and np.isfinite(new_low) \
+                        and np.isfinite(new_high):
+                    self._y_range = (new_low, new_high)
+
+    def _current_y_window(self):
+        """The vertical window in force, explicit or as drawn.
+
+        Falls back to the axes' own limits so the first wheel notch zooms
+        about what the user can actually see, rather than about a frame that
+        has not been computed yet.
+        """
+        if self._y_range is not None:
+            return self._y_range
+        if self._y_limits is not None:
+            return self._y_limits
+        try:
+            low, high = self._axes.get_ylim()
+        except (AttributeError, ValueError):   # pragma: no cover
+            return (None, None)
+        if not (np.isfinite(low) and np.isfinite(high)) or high <= low:
+            return (None, None)
+        return (float(low), float(high))
 
     def _begin_zoom_band(self, event) -> bool:
         if event.xdata is None or event.ydata is None:
@@ -935,8 +1058,17 @@ class SpectrumCanvas(QWidget):
             self._f1_range = (max(y0, y1), min(y0, y1))
         else:
             self._ppm_range = (high_x, low_x)
-            self._y_limits = None
-            self._stack_step = None
+            if self._y_zoom_mode:
+                # With Y zoom on, a dragged box means the box: taking its
+                # width but refitting its height would ignore half of a
+                # gesture the user made deliberately.
+                low_y, high_y = min(y0, y1), max(y0, y1)
+                if high_y > low_y:
+                    self._y_range = (low_y, high_y)
+            else:
+                self._y_range = None
+                self._y_limits = None
+                self._stack_step = None
         self._redraw()
         self.viewChanged.emit()
 
@@ -1229,7 +1361,13 @@ class SpectrumCanvas(QWidget):
         # line, scale up and it shot off the top with no way back. The frame is
         # now recomputed whenever the SET of traces changes (load, remove,
         # clear, arrangement) but deliberately NOT when scale or offset change.
-        if self._y_limits is None:
+        # An explicit Y zoom outranks every automatic frame. Checked before
+        # the cache so that the recompute below is skipped entirely: running
+        # it and then overriding would waste the work and, in stacked mode,
+        # would also re-lay the lanes underneath a user who had zoomed in.
+        if self._y_range is not None:
+            self._axes.set_ylim(*self._y_range)
+        elif self._y_limits is None:
             if self._arrangement == self.ARRANGEMENT_STACKED:
                 # Stacked framing has to use the DRAWN positions. The overlay
                 # rule -- frame the raw envelope, ignore scale and offset --
@@ -1242,7 +1380,9 @@ class SpectrumCanvas(QWidget):
                 self._y_limits = self._stacked_frame(visible, offset_step)
             else:
                 self._y_limits = self._frame_y_limits(visible, offset_step)
-        if self._y_limits is not None:
+            if self._y_limits is not None:
+                self._axes.set_ylim(*self._y_limits)
+        elif self._y_limits is not None:
             self._axes.set_ylim(*self._y_limits)
 
         self._axes.set_xlabel("ppm")
@@ -1614,6 +1754,11 @@ class SpectrumCanvas(QWidget):
         fitting has to happen in that order, or the frame is fitted to
         positions the redraw is about to change.
         """
+        # Fit means fit: an explicit Y zoom is exactly what the user is
+        # asking to be replaced, so it goes before anything is measured. Left
+        # in place, the zoom would be re-applied by the redraw below and the
+        # fitted limits discarded -- the button would appear to do nothing.
+        self._y_range = None
         if (self._arrangement == self.ARRANGEMENT_STACKED
                 and self._stack_step is not None):
             self._stack_step = None
@@ -2195,6 +2340,7 @@ class SpectrumCanvas(QWidget):
             "format": self.SESSION_FORMAT,
             "arrangement": self._arrangement,
             "ppm_range": list(self._ppm_range) if self._ppm_range else None,
+            "y_range": list(self._y_range) if self._y_range else None,
             "f1_range": list(self._f1_range) if self._f1_range else None,
             "f2_range": list(self._f2_range) if self._f2_range else None,
             "grid": self._show_grid,
@@ -2337,6 +2483,10 @@ class SpectrumCanvas(QWidget):
         self._arrangement = state.get("arrangement", self.ARRANGEMENT_OVERLAY)
         rng = state.get("ppm_range")
         self._ppm_range = tuple(rng) if rng else None
+        # Absent in sessions written before Y zoom existed. Absent means
+        # automatic framing, which is what those files actually had.
+        yr = state.get("y_range")
+        self._y_range = tuple(yr) if yr else None
         f1 = state.get("f1_range")
         self._f1_range = tuple(f1) if f1 else None
         f2 = state.get("f2_range")
@@ -2531,7 +2681,28 @@ class SpectrumCanvas(QWidget):
         return self._grid_spacing_ppm
 
     def reset_y_limits(self) -> None:
-        """Recompute the y range from what is currently drawn."""
+        """Recompute the y range from what is currently drawn.
+
+        Drops any explicit Y zoom as well. Without that this did nothing at
+        all once the user had zoomed -- it cleared the cache, the redraw
+        re-applied the zoom on top, and the control looked broken.
+
+        Undoable, but only when there is something to lose. Before Y zoom
+        existed this cleared a CACHE, and undoing a cache clear is
+        meaningless; now it can discard a vertical window the user set
+        deliberately, and one stray click on Fit Y must not be the end of it.
+        Pushing unconditionally would be the other error: it would fill the
+        undo history with steps that restore nothing visible.
+
+        The key is its own, not "y_zoom". Sharing that key would let a Fit Y
+        within the coalescing window fold into the wheel burst that preceded
+        it, so a single undo would jump back past both and the intermediate
+        zoom -- the state the user is actually trying to recover -- would
+        never be reachable.
+        """
+        if self._y_range is not None:
+            self.push_undo("y_fit")
+        self._y_range = None
         self._y_limits = None
         self._redraw()
 

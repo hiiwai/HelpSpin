@@ -40,6 +40,7 @@ class AdjustmentBar(QWidget):
     f1RangeChanged = Signal(float, float)   # 2D indirect dimension
     fullRequested = Signal()
     zoomModeChanged = Signal(bool)
+    yZoomModeChanged = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -107,13 +108,27 @@ class AdjustmentBar(QWidget):
         # zoom into. A toggle rather than a modifier key because the two uses
         # of the wheel are both wanted often, and a held key is awkward while
         # scrolling.
-        self._zoom_toggle = QPushButton("Zoom")
+        self._zoom_toggle = QPushButton("X zoom")
         self._zoom_toggle.setCheckable(True)
         self._zoom_toggle.setToolTip(
-            "Wheel zooms about the cursor; drag a box to zoom into it.\n"
+            "Wheel zooms the ppm axis about the cursor;\n"
+            "drag a box to zoom into it.\n"
             "Off: the wheel scales the selected spectrum instead."
         )
         self._zoom_toggle.toggled.connect(self.zoomModeChanged)
+
+        # The vertical counterpart. Independent of X zoom, not exclusive with
+        # it: with both on the wheel zooms both axes at once.
+        self._y_zoom_toggle = QPushButton("Y zoom")
+        self._y_zoom_toggle.setCheckable(True)
+        self._y_zoom_toggle.setToolTip(
+            "Wheel zooms the intensity axis about the cursor,\n"
+            "moving ALL spectra together.\n"
+            "Different from scaling one spectrum: this changes\n"
+            "nothing between them.\n"
+            "Fit Y returns to automatic framing."
+        )
+        self._y_zoom_toggle.toggled.connect(self.yZoomModeChanged)
 
         self._f1_apply = QPushButton("Apply F1")
         self._f1_apply.clicked.connect(self._on_f1_edited)
@@ -125,6 +140,7 @@ class AdjustmentBar(QWidget):
         self._f1_right_label = QLabel("bottom")
 
         layout.addWidget(self._zoom_toggle)
+        layout.addWidget(self._y_zoom_toggle)
         layout.addWidget(self._f1_label)
         layout.addWidget(self._f1_left)
         layout.addWidget(self._f1_right_label)

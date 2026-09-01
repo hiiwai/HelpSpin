@@ -165,6 +165,9 @@ class MainWindow(QMainWindow):
         self._adjustment_bar.fullRequested.connect(self._on_full_range)
         self._adjustment_bar.f1RangeChanged.connect(self._canvas.set_f1_range)
         self._adjustment_bar.zoomModeChanged.connect(self._canvas.set_zoom_mode)
+        self._adjustment_bar.yZoomModeChanged.connect(
+            self._canvas.set_y_zoom_mode
+        )
         # A zoom performed ON THE PLOT has to be reflected in the range boxes,
         # or they show a range that is no longer displayed and the next Apply
         # jumps the view back.

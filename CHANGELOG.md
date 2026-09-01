@@ -21,6 +21,88 @@ build can be traced back to a specific entry here.
 > pre-rendering — `0.1.0` (no suffix) is now reserved for when rendering
 > works. `0.0.1` corresponds to what was previously built as `0.1.0.dev1`.
 
+## [0.5.11] — 2026-09-01
+
+### Y zoom, alongside X zoom
+
+The adjustment bar's **Zoom** button is now **X zoom**, and a **Y zoom**
+button sits next to it. With Y zoom on, the wheel zooms the intensity axis
+about the cursor, moving all spectra together.
+
+The two toggles are **independent, not exclusive**: with both on the wheel
+zooms both axes at once, which is what the 2D view has always done and is the
+obvious reading of two separate switches.
+
+Y zoom is distinct from the wheel's default job, and the distinction is the
+point. Scaling the selected trace changes one spectrum's relationship to the
+others. Y zoom magnifies the whole view and changes **nothing** between them —
+a test asserts no `y_scale` or `y_offset` is touched while zooming.
+
+Behaviour worth knowing:
+
+- **It works with nothing selected.** The zoom checks run before the "is a
+  spectrum selected?" check, or the feature would be silently dead until a
+  trace happened to be clicked.
+- **An explicit zoom outranks automatic framing.** It survives loading another
+  spectrum, removing one, redrawing, an x zoom, and an x offset — every path
+  that clears the cached frame. This is the same rule `_ppm_range` already
+  followed; without it, dropping in one more spectrum would silently throw the
+  zoom away.
+- **Turning the toggle off is not an undo.** The zoom stays until something
+  clears it. **Fit Y** is the way back.
+- Zooming about the cursor keeps the point under the pointer fixed, so a peak
+  of interest does not walk off the edge.
+- Saved in sessions, and undoable — a wheel burst folds into one undo step.
+- Box-drag zoom stays with X zoom only; Y zoom is wheel-driven, as asked.
+
+### Fixed: Fit Y could not be undone
+
+Found while testing the above, and **introduced by it**. Every other change to
+the vertical window pushes an undo step, but `reset_y_limits` — what the
+**Fit Y** button calls — did not. Before Y zoom existed it only cleared a
+cache, so there was nothing to undo. Once it could also discard a window the
+user had set deliberately, one stray click destroyed a carefully placed zoom
+with no way back.
+
+Now undoable, with two deliberate details. It pushes **only when there is
+something to lose**, since an unconditional push would fill the history with
+steps that restore nothing visible. And it carries **its own coalescing key**
+rather than sharing `"y_zoom"`: sharing it would let a Fit Y landing inside
+the coalescing window fold into the wheel burst before it, so a single undo
+would jump back past both and the intermediate zoom — the state the user is
+trying to recover — would never be reachable.
+
+### Windows
+
+The wheel is the one place Windows genuinely differs, so it was checked rather
+than assumed. matplotlib's Qt backend computes the scroll step from
+`angleDelta/120` on X11 — always a clean ±1 — but prefers raw `pixelDelta`
+elsewhere, so on Windows a precision touchpad can report a step of 40 or 120
+instead of 1.
+
+The handler reads the step as **direction only**, never as a magnitude to
+raise the zoom factor to. That is correct here: `1.1**120` is not a zoom, it
+is a blank plot. Tests now cover a step of 120, a step of 0.2, a step of 0
+falling back to `event.button`, and an unrecognised button (a horizontal wheel
+must not be read as "up").
+
+**The honest limit:** these are Linux runs. A standard mouse wheel is exactly
+10% per notch and verified. A Windows precision touchpad fires *more events
+per gesture*, so zoom will feel faster there — that is pre-existing X zoom
+behaviour which Y zoom now shares, and judging whether it needs damping takes
+a real Windows machine. The zoom maths was deliberately not changed on
+speculation.
+
+### Tests
+
+908, up from 851. The Y zoom set covers the toggle, the wheel in both
+directions, cursor-anchored zooming, stacked mode, 2D (where the Y toggle
+drives F1 and the X toggle still drives both, unchanged), survival across
+load/remove/redraw/x-zoom/x-offset, the escape hatches, undo and coalescing,
+session round-tripping, and the degenerate cases: zero-height windows,
+inverted pairs, non-finite values, an empty canvas, 60 notches out and 200 in
+without the axis reaching infinity or collapsing.
+
 ## [0.5.10] — 2026-08-25
 
 ### X offset: shift a spectrum along the ppm axis
