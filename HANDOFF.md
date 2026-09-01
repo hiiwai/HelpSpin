@@ -561,7 +561,9 @@ the file format. If a third one appears, this is the pattern.
 ## 6. Delivery checklist
 
 ```bash
-# 1. bump version in pyproject.toml, add a CHANGELOG entry
+# 1. bump version in pyproject.toml, add a CHANGELOG entry,
+#    update MANUAL.md if behaviour changed, then:
+#      python packaging/build_manual.py     # regenerates MANUAL.pdf
 # 2. clean, sync, verify
 find . -name "__pycache__" -type d -exec rm -rf {} +
 rm -rf .pytest_cache .coverage build helspin.egg-info dist .venv *.png

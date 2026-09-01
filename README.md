@@ -3,17 +3,17 @@
 Compare Bruker NMR spectra and build publication figures. Previously
 developed under the working name VertaaNMR.
 
-**Status: dataset browser and application shell working. No comparison
-canvas yet.**
+**Status: working tool.** Browse a data root, open 1D and 2D spectra,
+overlay or stack them, adjust scale and position per spectrum, zoom either
+axis, and export a publication figure. Sessions save and restore; every
+adjustment is undoable.
 
 ```
-python -m pytest                          # 732 tests
+python -m pytest                          # 931 tests
 python -m pytest --cov=helspin.domain --cov-branch
 ```
 
-`shell_screenshot.png` is a real offscreen render of the running shell:
-toolbar, dataset browser (left), canvas placeholder (centre), ppm
-adjustment bar (bottom).
+See `MANUAL.md` (and `MANUAL.pdf`) for how to use it.
 
 ## Which folder to add as a data root
 
@@ -172,21 +172,25 @@ helspin --version      # prints the version and exits, no display needed
 
 See `INSTALL.md` for full setup instructions, including conda and
 troubleshooting a window that appears to hang or not start.
+`MANUAL.md` / `MANUAL.pdf` is the user manual: arrangements, scaling,
+X and Y offsets, zooming, sessions and export.
 
 ## What is next
 
-- **Rendering** — `services/render_block.py`: block → matplotlib axes, and
-  `read_1d`/`read_2d` in `nmrglue_reader.py`. A filled slot in `BoxCanvas`
-  currently shows its colour and the dropped dataset's label, not a plotted
-  spectrum -- that boundary is stated in the canvas placeholder text, the
-  New Figure flow, and here.
-- **Preferences dialog** — currently an honest stub in `__main__.py`
-  (`_preferences`) that says plainly what isn't built yet.
-- **Paste, export, undo, the TopSpin bridge.**
+- **Preferences dialog** — partially built; more display defaults to move into
+  it.
+- **The TopSpin bridge** — pasting a TopSpin identifier is parsed
+  (`domain/paths.py`) but not yet wired to a live TopSpin session.
 - **Automatic file-watching** was deliberately not built (see
   `DatasetTreeModel.refresh`'s docstring): `inotify`/`FSEvents` are
   unreliable over the network shares Bruker data commonly lives on.
-  Refreshing is explicit -- right-click a node, or Refresh All / F5.
+  Refreshing is explicit — right-click a node, or Refresh All / F5.
+- **Difference and sum operations ignore an X offset.** Aligning two spectra
+  horizontally and then subtracting uses their true ppm axes, not the aligned
+  ones. Deliberate, pending a decision — see the 0.5.10 changelog entry.
+- **Windows and macOS verification.** Development and testing currently run on
+  Linux; the Windows installer path in particular has not been exercised end
+  to end.
 
 ## Design rules the code enforces
 

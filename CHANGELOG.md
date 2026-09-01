@@ -1,9 +1,9 @@
 # Changelog
 
 All notable changes to HelSpin are recorded here. Versions follow
-[Semantic Versioning](https://semver.org/). The project is pre-1.0 and
-pre-rendering: the spectrum rendering engine is not implemented yet, so
-these are early releases, not a finished tool.
+[Semantic Versioning](https://semver.org/). The project is pre-1.0: spectra
+render, overlay and stack, and export to publication figures, but the tool is
+still short of a 1.0 in polish and breadth.
 
 **Versioning convention:** the version in `pyproject.toml` is the single
 source of truth; `helspin --version`, the delivered zip's filename, and this
@@ -20,6 +20,42 @@ build can be traced back to a specific entry here.
 > plain `0.0.X` patch numbers, which are more honest about the project being
 > pre-rendering — `0.1.0` (no suffix) is now reserved for when rendering
 > works. `0.0.1` corresponds to what was previously built as `0.1.0.dev1`.
+
+## [0.5.13] — 2026-09-01
+
+### User manual
+
+`MANUAL.md`, and `MANUAL.pdf` built from it — 17 pages covering data roots and
+the browser, overlay vs stacked, per-spectrum scale and Y offset, the X offset
+and why a shifted trace is labelled, both zoom toggles and how Y zoom differs
+in stacked mode, the ppm window, undo, sessions, export, file locations,
+troubleshooting, and a plainly stated list of known limitations.
+
+Figures are real exports from the running application, not mock-ups, so they
+cannot show something the software does not do.
+
+`packaging/build_manual.py` regenerates the PDF, and it is now step 1 of the
+release checklist in `HANDOFF.md`. Kept as a script so the PDF cannot drift
+away from the Markdown, and written against reportlab — which the project
+already depends on — rather than a converter needing LaTeX or a headless
+browser on every machine that cuts a release.
+
+### Corrected: the README and CHANGELOG described software that no longer exists
+
+Both still carried their earliest status text. The README announced "dataset
+browser and application shell working. No comparison canvas yet" and quoted
+732 tests; the CHANGELOG header said the project was "pre-rendering: the
+spectrum rendering engine is not implemented yet".
+
+None of that has been true for many releases. Anyone downloading this would
+have been told the tool cannot do the thing it does. The "What is next"
+section likewise still listed rendering as unbuilt, and described a filled
+slot as showing "its colour and the dropped dataset's label, not a plotted
+spectrum".
+
+Both headers now describe the working tool, and the roadmap lists what is
+actually outstanding: the Preferences dialog, the TopSpin bridge, differences
+ignoring an X offset, and Windows/macOS verification.
 
 ## [0.5.12] — 2026-09-01
 
