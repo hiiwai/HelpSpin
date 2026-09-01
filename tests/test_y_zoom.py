@@ -496,18 +496,25 @@ def test_2d_y_zoom_alone_zooms_f1_only(canvas):
 
 
 def test_zoom_applies_in_stacked_mode(canvas):
-    """Stacked mode computes its frame from the lane layout, in a different
-    branch from overlay. A zoom that works in one and is silently ignored in
-    the other is the kind of half-feature that is worse than none."""
+    """Stacked mode responds to the wheel too -- but by magnifying the traces,
+    not by narrowing the window.
+
+    This test previously asserted the window shrank, which is precisely the
+    behaviour that slid the lanes around and hid whole spectra. Keeping it
+    would have locked in the fault.
+    """
     _add(canvas, _trace("A"), _trace("B", centre=7.0))
     canvas.set_arrangement("stacked")
     canvas.set_y_zoom_mode(True)
-    before = _height(canvas)
+    frame_before = canvas._axes.get_ylim()
 
     canvas._on_scroll(_Wheel(step=1, ydata=0.5))
 
-    assert _height(canvas) < before, "wheel must zoom the stacked view too"
-    assert canvas.y_range() is not None
+    assert canvas.stack_gain() > 1.0, "the wheel must magnify the traces"
+    assert canvas._axes.get_ylim() == pytest.approx(frame_before), (
+        "the window must not move in stacked mode"
+    )
+    assert canvas.y_range() is None, "stacked zoom must not pin the window"
 
 
 def test_zoom_survives_a_stack_step_change(canvas):
@@ -768,3 +775,315 @@ def test_pixel_delta_down_widens_by_the_same_amount(canvas):
     canvas._on_scroll(_Wheel(step=-120, ydata=0.5))
 
     assert _height(canvas) == pytest.approx(start, rel=1e-6)
+
+
+# --- stacked mode: magnify, never move the lanes ---------------------------
+
+
+def _stacked(canvas, n=3):
+    for i in range(n):
+        canvas._traces.append(_trace(chr(65 + i), centre=5.0 + i))
+    canvas.set_arrangement("stacked")
+    canvas._redraw()
+    canvas.set_y_zoom_mode(True)
+
+
+def _baselines(canvas):
+    return [round(float(np.nanmin(ln.get_ydata())), 6)
+            for ln in canvas._axes.get_lines()]
+
+
+def _peak_fraction(canvas, line=0):
+    """Apparent peak height as a fraction of the visible frame."""
+    low, high = canvas._axes.get_ylim()
+    ydata = canvas._axes.get_lines()[line].get_ydata()
+    return (float(np.nanmax(ydata)) - float(np.nanmin(ydata))) / (high - low)
+
+
+def test_stacked_zoom_never_moves_a_baseline(canvas):
+    """The reported fault. Zooming the WINDOW in stacked mode slides the lanes
+    around and pushes whole spectra off the canvas. Stacked mode magnifies the
+    traces instead, so every baseline stays exactly where it was."""
+    _stacked(canvas)
+    before = _baselines(canvas)
+
+    for _ in range(10):
+        canvas._on_scroll(_Wheel(step=1, ydata=0.5))
+
+    assert _baselines(canvas) == before
+
+
+def test_stacked_zoom_out_never_moves_a_baseline(canvas):
+    _stacked(canvas)
+    before = _baselines(canvas)
+
+    for _ in range(10):
+        canvas._on_scroll(_Wheel(step=-1, ydata=0.5))
+
+    assert _baselines(canvas) == before
+
+
+def test_no_spectrum_disappears_however_far_you_zoom(canvas):
+    """The other half of the report: spectra vanished entirely. Every trace
+    must still be drawn, and its baseline still inside the frame."""
+    _stacked(canvas, n=4)
+
+    for _ in range(40):
+        canvas._on_scroll(_Wheel(step=1, ydata=0.5))
+
+    assert len(canvas._axes.get_lines()) == 4
+    low, high = canvas._axes.get_ylim()
+    for base in _baselines(canvas):
+        assert low <= base <= high, "a lane was pushed out of the frame"
+
+
+def test_stacked_zoom_actually_magnifies(canvas):
+    """It must do something: peaks grow against the frame."""
+    _stacked(canvas)
+    before = _peak_fraction(canvas)
+
+    for _ in range(5):
+        canvas._on_scroll(_Wheel(step=1, ydata=0.5))
+
+    assert _peak_fraction(canvas) > before * 1.5
+
+
+def test_the_frame_does_not_follow_the_gain(canvas):
+    """The bug this fix removes.
+
+    The stacked frame used to include the gain. Because it is recomputed on
+    load, remove and window change, the frame then grew to swallow the
+    magnification the moment any of those happened -- zoom in, drop in one
+    more spectrum, and the peaks silently shrank back. The magnification
+    appeared to undo itself.
+    """
+    _stacked(canvas)
+    canvas._y_limits = None
+    canvas._redraw()
+    plain = canvas._axes.get_ylim()
+
+    for gain in (2.5, 100.0, 1e6):
+        canvas._stack_gain = gain
+        canvas._y_limits = None          # exactly what a load does
+        canvas._redraw()
+        assert canvas._axes.get_ylim() == pytest.approx(plain), (
+            f"the frame moved at gain {gain}"
+        )
+
+
+def test_magnification_survives_loading_another_spectrum(canvas):
+    """The user-visible consequence of the above."""
+    _stacked(canvas, n=2)
+    for _ in range(8):
+        canvas._on_scroll(_Wheel(step=1, ydata=0.5))
+    gain = canvas.stack_gain()
+
+    def drawn_amplitude():
+        ydata = canvas._axes.get_lines()[0].get_ydata()
+        return float(np.nanmax(ydata)) - float(np.nanmin(ydata))
+
+    before = drawn_amplitude()
+
+    canvas._traces.append(_trace("Z", centre=8.0))
+    canvas._y_limits = None
+    canvas._redraw()
+
+    # The frame legitimately grows to hold the new lane, so the peak's share
+    # of the canvas changes. What must NOT change is the magnification itself
+    # or the height the trace is drawn at.
+    assert canvas.stack_gain() == pytest.approx(gain)
+    assert drawn_amplitude() == pytest.approx(before, rel=1e-9)
+
+
+def test_gain_does_not_touch_any_trace_scale(canvas):
+    """Magnifying the view must not alter the spectra's relationship to each
+    other -- that is what the per-trace scale is for."""
+    _stacked(canvas)
+    for _ in range(6):
+        canvas._on_scroll(_Wheel(step=1, ydata=0.5))
+
+    assert all(t.y_scale == 1.0 for t in canvas._traces)
+    assert all(t.y_offset == 0.0 for t in canvas._traces)
+
+
+def test_the_stack_step_is_unaffected_by_the_gain(canvas):
+    """Lane SPACING is what keeps baselines apart. If the gain fed into it,
+    the lanes would spread as the user zoomed -- the reported fault again, by
+    another route."""
+    _stacked(canvas)
+    step = canvas._stack_step
+    for _ in range(10):
+        canvas._on_scroll(_Wheel(step=1, ydata=0.5))
+    assert canvas._stack_step == step
+
+
+# --- no limit, as asked -----------------------------------------------------
+
+
+def test_there_is_no_ceiling_on_magnification(canvas):
+    """A weak signal beside a strong one can need many orders of magnitude.
+    A silent ceiling makes the wheel stop working with no explanation."""
+    _stacked(canvas)
+    for _ in range(200):
+        canvas._on_scroll(_Wheel(step=1, ydata=0.5))
+
+    assert canvas.stack_gain() > 1e6
+    assert np.isfinite(canvas.stack_gain())
+
+
+def test_there_is_no_floor_either(canvas):
+    _stacked(canvas)
+    for _ in range(200):
+        canvas._on_scroll(_Wheel(step=-1, ydata=0.5))
+
+    assert canvas.stack_gain() < 1e-6
+    assert canvas.stack_gain() > 0
+
+
+def test_the_gain_never_becomes_infinite(canvas):
+    """No limit is not the same as no guard. Infinity or zero would draw a
+    blank plot with no way back -- that is a broken zoom, not a big one."""
+    _stacked(canvas)
+    canvas._stack_gain = 1e308
+    for _ in range(50):
+        canvas._on_scroll(_Wheel(step=1, ydata=0.5))
+
+    assert np.isfinite(canvas.stack_gain())
+    assert canvas.stack_gain() > 0
+    low, high = canvas._axes.get_ylim()
+    assert np.isfinite(low) and np.isfinite(high) and high > low
+
+
+def test_an_extreme_gain_still_renders(canvas, tmp_path):
+    _stacked(canvas)
+    canvas._stack_gain = 1e100
+    canvas._redraw()
+    out = tmp_path / "extreme.png"
+    canvas.save_image(out)
+    assert out.is_file() and out.stat().st_size > 0
+
+
+# --- the escape hatches and the other arrangement ---------------------------
+
+
+def test_fit_y_clears_the_magnification(canvas):
+    _stacked(canvas)
+    for _ in range(10):
+        canvas._on_scroll(_Wheel(step=1, ydata=0.5))
+    assert canvas.stack_gain() != 1.0
+
+    canvas.reset_y_limits()
+
+    assert canvas.stack_gain() == 1.0
+
+
+def test_fit_y_clearing_the_gain_is_undoable(canvas):
+    _stacked(canvas)
+    for _ in range(10):
+        canvas._on_scroll(_Wheel(step=1, ydata=0.5))
+    gain = canvas.stack_gain()
+
+    canvas.reset_y_limits()
+    canvas.undo()
+
+    assert canvas.stack_gain() == pytest.approx(gain)
+
+
+def test_reset_y_zoom_clears_the_magnification(canvas):
+    _stacked(canvas)
+    for _ in range(5):
+        canvas._on_scroll(_Wheel(step=1, ydata=0.5))
+    canvas.reset_y_zoom()
+    assert canvas.stack_gain() == 1.0
+
+
+def test_magnification_is_undoable(canvas):
+    _stacked(canvas)
+    for _ in range(5):
+        canvas._on_scroll(_Wheel(step=1, ydata=0.5))
+    assert canvas.stack_gain() != 1.0
+    canvas.undo()
+    assert canvas.stack_gain() == 1.0
+
+
+def test_magnification_round_trips_through_a_session(canvas):
+    _stacked(canvas)
+    for _ in range(7):
+        canvas._on_scroll(_Wheel(step=1, ydata=0.5))
+    saved = canvas.stack_gain()
+    assert canvas.session_state()["stack_gain"] == pytest.approx(saved)
+
+
+def test_a_session_without_a_gain_field_means_unmagnified(canvas):
+    assert float({}.get("stack_gain", 1.0)) == 1.0
+
+
+def test_overlay_mode_still_zooms_the_window(canvas):
+    """Overlay has no lanes to protect, and window zoom is right there. The
+    stacked branch must not have taken it over."""
+    _add(canvas, _trace("A"), _trace("B", centre=7.0))
+    canvas.set_arrangement("overlay")
+    canvas.set_y_zoom_mode(True)
+    before = _height(canvas)
+
+    canvas._on_scroll(_Wheel(step=1, ydata=0.5))
+
+    assert _height(canvas) < before, "overlay must still zoom the window"
+    assert canvas.y_range() is not None
+    assert canvas.stack_gain() == 1.0, "overlay must not touch the gain"
+
+
+def test_switching_to_overlay_and_back_keeps_the_gain(canvas):
+    """Arrangement changes rebuild the frame; the magnification is a separate
+    setting and should not be collateral damage."""
+    _stacked(canvas)
+    for _ in range(5):
+        canvas._on_scroll(_Wheel(step=1, ydata=0.5))
+    gain = canvas.stack_gain()
+
+    canvas.set_arrangement("overlay")
+    canvas.set_arrangement("stacked")
+
+    assert canvas.stack_gain() == pytest.approx(gain)
+
+
+def test_x_zoom_in_stacked_mode_does_not_magnify(canvas):
+    """Only the Y toggle drives the gain."""
+    _stacked(canvas)
+    canvas.set_y_zoom_mode(False)
+    canvas.set_zoom_mode(True)
+
+    canvas._on_scroll(_Wheel(step=1, xdata=5.0, ydata=0.5))
+
+    assert canvas.stack_gain() == 1.0
+
+
+def test_bottoming_works_while_magnified(canvas):
+    """"To bottom" positions a trace by its DRAWN floor, so it has to account
+    for the gain. If it used the unmagnified floor, bottoming while zoomed
+    would place the baseline somewhere the trace is not."""
+    _stacked(canvas, n=2)
+    for _ in range(8):
+        canvas._on_scroll(_Wheel(step=1, ydata=0.5))
+    gain = canvas.stack_gain()
+
+    canvas.move_to_bottom(1)
+
+    low, high = canvas._axes.get_ylim()
+    base = float(np.nanmin(canvas._axes.get_lines()[1].get_ydata()))
+    assert low <= base <= high
+    assert canvas.stack_gain() == pytest.approx(gain), (
+        "bottoming must not disturb the magnification"
+    )
+
+
+def test_bottom_all_works_while_magnified(canvas):
+    _stacked(canvas, n=3)
+    for _ in range(8):
+        canvas._on_scroll(_Wheel(step=1, ydata=0.5))
+
+    canvas.move_all_to_bottom()
+
+    low, high = canvas._axes.get_ylim()
+    for base in _baselines(canvas):
+        assert low <= base <= high

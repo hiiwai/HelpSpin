@@ -364,6 +364,16 @@ class SpectrumCanvas(QWidget):
         # on the horizontal axis. Putting the two in one field would mean
         # every new spectrum silently threw the zoom away.
         self._y_range: tuple[float, float] | None = None
+        # Display gain for STACKED mode only: a multiplier on every trace's
+        # drawn amplitude, applied at draw time and never written into the
+        # data. This is what the Y zoom wheel drives in a stack.
+        #
+        # Zooming the axis WINDOW is wrong in stacked mode. The lanes sit at
+        # fixed positions, so narrowing the window about the cursor slides it
+        # off the lower lanes and the bottom spectra vanish entirely -- the
+        # reported fault. A stack is a fixed grid of lanes; zooming it means
+        # making the traces taller in their lanes, not moving the lanes.
+        self._stack_gain: float = 1.0
         self._zoom_band = None      # (x0, y0, Rectangle) while dragging
         self._opacity = 1.0
         # Digits after the point in the cursor readouts. Two is enough to
@@ -536,6 +546,7 @@ class SpectrumCanvas(QWidget):
         self._selected_index = None
         self._y_limits = None
         self._y_range = None    # an empty canvas has nothing to stay zoomed on
+        self._stack_gain = 1.0
         self._redraw()
         self._emit_mode_if_changed()
         self.tracesChanged.emit()
@@ -746,6 +757,7 @@ class SpectrumCanvas(QWidget):
             "y_limits": self._y_limits,
             "y_range": self._y_range,
             "stack_step": self._stack_step,
+            "stack_gain": self._stack_gain,
         }
 
     def _apply_snapshot(self, snap: dict) -> None:
@@ -767,10 +779,18 @@ class SpectrumCanvas(QWidget):
         # instead of raising KeyError halfway through an undo.
         self._y_range = snap.get("y_range")
         self._stack_step = snap["stack_step"]
+        # .get with a default, for snapshots taken before this existed.
+        self._stack_gain = snap.get("stack_gain", 1.0)
         self._redraw()
         self.tracesChanged.emit()
         self.viewChanged.emit()
         self.historyChanged.emit()
+
+    # Bounds on the stacked display gain. Not decoration: without a floor a
+    # few notches down flatten every trace to an invisible line, and without a
+    # ceiling a few notches up put them so far past the frame that the canvas
+    # shows nothing but vertical strokes -- both look like the spectra have
+    # been lost, and both are reached in a couple of seconds of scrolling.
 
     COALESCE_SECONDS = 1.0
 
@@ -859,6 +879,13 @@ class SpectrumCanvas(QWidget):
     def y_zoom_mode(self) -> bool:
         return self._y_zoom_mode
 
+    def stack_gain(self) -> float:
+        """Display magnification of the traces in stacked mode.
+
+        1.0 means unzoomed. Lane positions are never affected by it.
+        """
+        return self._stack_gain
+
     def y_range(self) -> tuple[float, float] | None:
         """The explicit vertical window, or None when it is automatic."""
         return self._y_range
@@ -885,11 +912,12 @@ class SpectrumCanvas(QWidget):
 
     def reset_y_zoom(self) -> None:
         """Hand the vertical axis back to automatic framing."""
-        if self._y_range is None:
+        if self._y_range is None and self._stack_gain == 1.0:
             return
         self.push_undo("y_zoom")
         self._y_range = None
         self._y_limits = None
+        self._stack_gain = 1.0
         self._redraw()
         self.viewChanged.emit()
 
@@ -975,6 +1003,26 @@ class SpectrumCanvas(QWidget):
                     if self._y_range is None:
                         self._y_limits = None
                         self._stack_step = None
+        if self._y_zoom_mode and self._arrangement == self.ARRANGEMENT_STACKED:
+            # Stacked mode magnifies the traces instead of moving the window.
+            # Nothing here touches _y_range, _y_limits or _stack_step, so the
+            # lanes and the frame stay exactly where they are and no spectrum
+            # can be zoomed out of sight.
+            #
+            # factor < 1 means "zoom in" (the caller inverts it), so the gain
+            # is the reciprocal.
+            if factor > 0:
+                gain = self._stack_gain / factor
+                # No ceiling and no floor. A weak signal beside a strong one
+                # can need magnification of many orders of magnitude to read
+                # at all, and a limit there just stops the wheel doing
+                # anything with no explanation. The only rejection is a value
+                # that is not a usable number: infinity or zero would draw a
+                # blank plot with no way back, which is not a big zoom, it is
+                # a broken one.
+                if np.isfinite(gain) and gain > 0:
+                    self._stack_gain = gain
+            return
         if self._y_zoom_mode and event.ydata is not None:
             low, high = self._current_y_window()
             if low is not None:
@@ -1332,7 +1380,8 @@ class SpectrumCanvas(QWidget):
         drawn = []
         for i, trace in enumerate(visible):
             # Per-trace vertical scale and offset, then the stacking offset.
-            y = (trace.intensity * trace.y_scale) + trace.y_offset + (offset_step * i)
+            y = ((trace.intensity * trace.y_scale * self._stack_gain)
+                 + trace.y_offset + (offset_step * i))
             width = trace.line_width
             if selected is not None and trace is selected and len(visible) > 1:
                 width = width * 1.9   # make the selected trace obvious
@@ -1622,8 +1671,26 @@ class SpectrumCanvas(QWidget):
             if data.size == 0:
                 continue
             base = trace.y_offset + offset_step * i
-            lows.append(float(np.nanmin(data)) * trace.y_scale + base)
-            highs.append(float(np.nanmax(data)) * trace.y_scale + base)
+            # The Y-zoom gain is deliberately NOT included.
+            #
+            # It used to be, on the reasoning that no lane should fall outside
+            # the frame. But this frame is recomputed on load, remove and
+            # window change, so including the gain meant the frame grew to
+            # swallow the magnification the moment any of those happened:
+            # zoom in, drop in one more spectrum, and the peaks silently
+            # shrank back towards their original size. The magnification
+            # appeared to undo itself for no reason the user could see.
+            #
+            # Excluding it makes the frame a property of the LANES alone --
+            # baselines and the unmagnified envelope -- so it does not move
+            # when the gain changes, and the gain is a stable magnification
+            # rather than one the next load renegotiates. Magnified peaks
+            # overflow their lane and can run off the canvas entirely, which
+            # is intended: that is what turning the intensity up in a stacked
+            # plot does, and it is the caller's business how far to go.
+            scale = trace.y_scale
+            lows.append(float(np.nanmin(data)) * scale + base)
+            highs.append(float(np.nanmax(data)) * scale + base)
         if not lows:
             return None
         low, high = min(lows), max(highs)
@@ -1850,6 +1917,11 @@ class SpectrumCanvas(QWidget):
         floor = float(np.nanmin(data))
         if not np.isfinite(floor):
             return None
+        # The gain is applied in stacked mode, so the drawn floor includes
+        # it. Without this, "to bottom" positioned a zoomed stack by its
+        # unzoomed minimum and put the baseline in the wrong place.
+        if self._arrangement == self.ARRANGEMENT_STACKED:
+            return floor * trace.y_scale * self._stack_gain
         return floor * trace.y_scale
 
     def _bottom_anchor(self) -> float | None:
@@ -2341,6 +2413,7 @@ class SpectrumCanvas(QWidget):
             "arrangement": self._arrangement,
             "ppm_range": list(self._ppm_range) if self._ppm_range else None,
             "y_range": list(self._y_range) if self._y_range else None,
+            "stack_gain": self._stack_gain,
             "f1_range": list(self._f1_range) if self._f1_range else None,
             "f2_range": list(self._f2_range) if self._f2_range else None,
             "grid": self._show_grid,
@@ -2487,6 +2560,18 @@ class SpectrumCanvas(QWidget):
         # automatic framing, which is what those files actually had.
         yr = state.get("y_range")
         self._y_range = tuple(yr) if yr else None
+        # Absent in sessions written before stacked Y zoom existed; 1.0
+        # is the correct reading of a file that carried no gain.
+        try:
+            gain = float(state.get("stack_gain", 1.0))
+        except (TypeError, ValueError):
+            gain = 1.0
+        if not np.isfinite(gain) or gain <= 0:
+            gain = 1.0
+        # Accepted at whatever magnification it was saved at -- see the wheel
+        # handler: there is no ceiling. Already rejected above if it is not a
+        # finite positive number.
+        self._stack_gain = gain
         f1 = state.get("f1_range")
         self._f1_range = tuple(f1) if f1 else None
         f2 = state.get("f2_range")
@@ -2700,10 +2785,15 @@ class SpectrumCanvas(QWidget):
         zoom -- the state the user is actually trying to recover -- would
         never be reachable.
         """
-        if self._y_range is not None:
+        if self._y_range is not None or self._stack_gain != 1.0:
             self.push_undo("y_fit")
         self._y_range = None
         self._y_limits = None
+        # Fit Y is the single escape hatch for the vertical axis, so it has to
+        # clear the stacked gain as well. Leaving it set would make the button
+        # appear to do nothing in a stacked view that had been zoomed -- the
+        # same fault this method was already fixed for once, with _y_range.
+        self._stack_gain = 1.0
         self._redraw()
 
     def apply_styles(self, styles: list[dict]) -> None:

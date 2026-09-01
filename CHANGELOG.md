@@ -21,6 +21,95 @@ build can be traced back to a specific entry here.
 > pre-rendering — `0.1.0` (no suffix) is now reserved for when rendering
 > works. `0.0.1` corresponds to what was previously built as `0.1.0.dev1`.
 
+## [0.5.12] — 2026-09-01
+
+### Fixed: Y zoom moved the baselines in stacked mode and hid spectra
+
+Reported: in stacked mode, Y zoom slid the lanes around and pushed whole
+spectra off the canvas.
+
+The cause was that stacked mode zoomed the **window**, exactly as overlay
+does. In overlay that is right — one frame, one set of traces. In stacked mode
+the layout *is* a set of lanes at fixed baselines, so narrowing the window
+does not magnify the stack, it crops it: the lanes above the cursor leave the
+frame and those spectra vanish with no indication they were ever there.
+
+**Stacked mode now magnifies the traces instead of moving the window.** The
+wheel scales the drawn amplitude of every spectrum together, and nothing in
+that path touches `_y_range`, `_y_limits` or `_stack_step` — so baselines stay
+exactly where they were. Verified directly: ten notches of zoom leave the
+baselines at the same values to six decimal places, and every trace is still
+drawn with its lane inside the frame.
+
+Overlay is untouched and still zooms the window, which is correct there and
+which you reported as working.
+
+### Fixed alongside: the magnification undid itself on the next load
+
+Found while testing the above. The stacked frame *included* the gain, on the
+reasoning that no lane should fall outside it. But that frame is recomputed on
+load, remove and window change — so it grew to swallow the magnification the
+moment any of those happened. Zoom in, drop in one more spectrum, and the
+peaks silently shrank back toward their original size for no reason visible to
+the user.
+
+The frame is now a property of the **lanes alone** — baselines and the
+unmagnified envelope — and is provably independent of the gain: identical
+limits at gain 1, 2.5, 100 and 10⁶. Magnified peaks overflow their lane and
+can run off the canvas, which is intended and is what turning the intensity up
+in a stacked plot does.
+
+### No limit on the magnification
+
+The gain had a ceiling of 10⁴ and a floor of 10⁻⁴. Both are removed. A weak
+signal beside a strong one can need many orders of magnitude, and a silent
+ceiling just stops the wheel working with no explanation. Two hundred notches
+now reaches ~10⁸ and keeps going.
+
+The one remaining rejection is a value that is not a usable number. Infinity
+or zero would draw a blank plot with no way back — that is a broken zoom, not
+a big one — so a step that would produce either is refused and the previous
+gain stands. Tested from 10³⁰⁸ upward: the gain stays finite and the frame
+stays finite and ordered.
+
+### Checked for collateral damage
+
+- **Lane spacing** (`_stack_step`) does not read the gain, so lanes cannot
+  spread apart as you zoom — that would be the reported fault by another
+  route.
+- **Per-trace scale and offset** are untouched by magnifying; the view changes,
+  the spectra's relationship to each other does not.
+- **"To bottom" and "Bottom all"** position by the *drawn* floor, which does
+  include the gain, so bottoming while magnified still lands the baseline
+  where the trace actually is. Both verified while zoomed.
+- **Fit Y** and **reset** clear the magnification, and clearing it is
+  undoable.
+- The gain is saved in sessions and undoable; a session without the field
+  reads as unmagnified.
+- **X zoom in stacked mode** does not magnify — only the Y toggle does.
+- Switching to overlay and back preserves the magnification.
+
+### One test was rewritten, deliberately
+
+`test_zoom_applies_in_stacked_mode` asserted that the window narrowed in
+stacked mode — that is, it encoded the bug being fixed here. Keeping it
+passing would have meant keeping the fault. It now asserts the opposite: the
+traces magnify and the window does not move.
+
+A second test of mine failed for a better reason and was corrected rather than
+the code: adding a spectrum adds a lane, so the frame legitimately grows and
+the peak's *share of the canvas* changes. What must not change is the
+magnification and the height the trace is drawn at, which is what it now
+checks.
+
+### Tests
+
+931, up from 908. Thirty cover stacked-mode magnification: baselines unmoved
+zooming in and out, no spectrum lost over forty notches, the frame provably
+independent of the gain, magnification surviving a load, no ceiling, no floor,
+no path to infinity, rendering at 10¹⁰⁰, bottoming while magnified, and
+overlay mode still zooming the window.
+
 ## [0.5.11] — 2026-09-01
 
 ### Y zoom, alongside X zoom

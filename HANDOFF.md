@@ -374,6 +374,34 @@ Kept for a possible future "precise layout" mode. Do not assume they run.
 
 ---
 
+### 4.r  Stacked mode magnifies; it does NOT zoom the window
+
+In stacked mode the layout IS a set of lanes at fixed baselines. Narrowing the
+vertical window there does not magnify the stack, it crops it: lanes leave the
+frame and whole spectra disappear. That was the reported fault.
+
+`_zoom_1d` therefore branches on the arrangement. Stacked scales
+`_stack_gain`; overlay zooms `_y_range`. Three invariants hold this together
+and each is covered by tests:
+
+- **The stacked path must not touch `_y_range`, `_y_limits` or
+  `_stack_step`.** Any of them moves the lanes, which is the bug.
+- **`_stacked_frame` must NOT include the gain.** It used to. Because that
+  frame is recomputed on load, remove and window change, including the gain
+  meant the frame grew to swallow the magnification the moment any of those
+  happened -- the zoom silently undid itself. The frame is a property of the
+  lanes alone. Magnified peaks overflowing the canvas is intended.
+- **`_stack_step` must not read the gain either**, or lanes spread apart as
+  the user zooms: the same fault by another route.
+
+`_displayed_floor` DOES include the gain, and must: "to bottom" positions by
+where a trace is actually drawn.
+
+There is deliberately **no ceiling and no floor** on the gain -- a weak signal
+beside a strong one can need orders of magnitude. The only rejection is a
+non-finite or non-positive value, which would draw a blank plot with no way
+back. Do not reintroduce clamps.
+
 ### 4.s  Y zoom: an explicit window outranks every automatic re-frame
 
 `_y_range` is the user's stated vertical window; `_y_limits` is a cache. Any
