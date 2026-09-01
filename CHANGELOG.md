@@ -21,6 +21,77 @@ build can be traced back to a specific entry here.
 > pre-rendering — `0.1.0` (no suffix) is now reserved for when rendering
 > works. `0.0.1` corresponds to what was previously built as `0.1.0.dev1`.
 
+## [0.5.10] — 2026-08-25
+
+### X offset: shift a spectrum along the ppm axis
+
+The horizontal counterpart of the Y offset, per-trace and on the selected
+spectrum. **Spectrum list → X offset**, in ppm. For aligning spectra that were
+referenced slightly differently, and for skewing a stack into a cascade.
+
+It follows the Y offset's hard-won rule exactly: **the offset is a pure
+translation and never re-fits the frame.** Re-fitting the x limits so a
+shifted trace stayed inside them would widen the view every time one spectrum
+was nudged, making every *other* spectrum appear to slide and compress while
+the user adjusted a single one — the same regression that was fixed once on
+the y axis. Shift far enough and the trace runs off the edge rather than the
+view chasing it. The control is bounded to half a spectrum width so that
+cannot happen by accident.
+
+Details worth knowing:
+
+- **The raw data is never touched.** `drawn_ppm()` applies the shift at draw
+  time, in one place, so the plot, the exports and the frame cannot disagree
+  about where a trace is. `trace.ppm` remains the true chemical shift, and an
+  unshifted trace gets the original array back with no copy — the common case
+  does not pay for the feature.
+- **The step and range come from the spectrum's own width.** A fixed range
+  would be wrong in both directions: 100 ppm is absurd for a ¹H spectrum
+  spanning 12, and far too small for ¹³C spanning 200.
+- **Four decimals**, because a real referencing correction is routinely
+  0.01–0.05 ppm and the Y offset's single decimal would round most of them to
+  zero.
+- Undo coalesces per-keystroke spin box edits into one step, as elsewhere.
+- Saved in sessions. A session written before this release has no field, and
+  absent is read as zero — the truthful reading of a file that carried no
+  shift.
+- **Clear X offsets** returns every trace to its true shift in one action,
+  which is how it is needed: having aligned several spectra by eye, checking
+  whether a difference is real means putting them all back at once.
+
+### A shifted spectrum says so
+
+This is the one place the X offset is deliberately *not* a mirror of the Y
+offset. Moving a trace vertically changes nothing a reader would interpret.
+Moving it horizontally moves it along the chemical shift axis, and chemical
+shift is data — a shifted peak no longer reads at its true value.
+
+So a non-zero shift is stated in two places: in the spectrum list while
+working, and **in the on-plot label**, which is what ends up in the figure.
+A trace shifted by a quarter of a ppm is drawn as `SampleB  [+0.250 ppm]`.
+The marker disappears the moment the shift returns to zero.
+
+This is a defensible default rather than an obviously correct one. If the
+annotation is unwanted on a finished figure, say so and it can become a
+preference — but silently shifting a chemical shift axis is not something the
+software should do without the figure admitting it.
+
+### Not changed, and worth a decision
+
+Differences and sums still work from **unshifted** data. If two spectra are
+aligned with an X offset and then subtracted, the subtraction uses their true
+ppm axes, not the aligned ones. That is arguably the wrong behaviour — align
+then subtract is a real workflow — but changing it silently alters the result
+of an existing operation, so it is left alone pending a decision. Peak readout
+likewise always reports true, unshifted ppm.
+
+### Tests
+
+851, up from 832. Nineteen cover the offset itself: that the frame does not
+move, that the raw data is untouched, that a user-set zoom survives, that
+non-finite values are refused, undo and coalescing, session round-tripping,
+and that the label marker appears and disappears with the shift.
+
 ## [0.5.9] — 2026-08-25
 
 ### Contact address

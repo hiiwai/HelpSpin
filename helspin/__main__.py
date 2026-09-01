@@ -191,6 +191,7 @@ class MainWindow(QMainWindow):
         self._spectrum_list.selectionChanged.connect(self._on_list_selection)
         self._spectrum_list.yScaleChanged.connect(self._canvas.set_y_scale)
         self._spectrum_list.yOffsetChanged.connect(self._canvas.set_y_offset)
+        self._spectrum_list.xOffsetChanged.connect(self._canvas.set_x_offset)
         self._spectrum_list.visibilityToggled.connect(
             self._canvas.set_trace_visible
         )

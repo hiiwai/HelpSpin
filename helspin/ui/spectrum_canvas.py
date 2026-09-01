@@ -97,6 +97,17 @@ class Trace:
     visible: bool = True
     y_scale: float = 1.0
     y_offset: float = 0.0
+    # Horizontal shift in PPM, for lining up spectra that were referenced
+    # slightly differently, or for skewing a stack into a cascade.
+    #
+    # This one is different in kind from y_offset and is treated with more
+    # care because of it. Moving a trace vertically changes nothing a reader
+    # would interpret; moving it horizontally moves it along the CHEMICAL
+    # SHIFT axis, and chemical shift is data. A shifted trace is therefore
+    # marked in the spectrum list and in the legend, so a figure never claims
+    # a peak sits somewhere it does not. Peak readout always reports true,
+    # unshifted ppm.
+    x_offset: float = 0.0
     line_width: float = 0.8
     line_style: str = "-"      # matplotlib style: '-', '--', ':', '-.'
     # 2D spectra carry a matrix plus both ppm axes. ppm/intensity stay empty
@@ -147,10 +158,21 @@ class Trace:
     source_scales: tuple[float, float] = (1.0, 1.0)
 
     def display_label(self, show_pulprog: bool = True) -> str:
-        """Name as drawn on the plot."""
+        """Name as drawn on the plot.
+
+        A non-zero x_offset is stated here, on the figure itself, and that is
+        deliberate. A vertical offset is presentation; a horizontal one moves
+        the trace along the chemical shift axis, so its peaks no longer read
+        at their true values. A figure that has been aligned by hand should
+        say so where the figure is looked at, not only in the application that
+        made it.
+        """
+        name = self.label
         if show_pulprog and self.pulse_program:
-            return f"{self.label}  ({self.pulse_program})"
-        return self.label
+            name = f"{name}  ({self.pulse_program})"
+        if self.x_offset:
+            name = f"{name}  [{self.x_offset:+.3f} ppm]"
+        return name
 
 
 class _LoadSignals(QObject):
@@ -591,6 +613,60 @@ class SpectrumCanvas(QWidget):
             return
         self.set_y_offset(index, self._traces[index].y_offset + float(delta))
 
+    def set_x_offset(self, index: int, offset: float) -> None:
+        """Shift one spectrum along the ppm axis. Pure translation.
+
+        The same rule as set_y_offset, for the same reason: this must NOT
+        clear _ppm_range. Re-fitting the x limits to include the shifted trace
+        would widen the frame every time one spectrum was nudged, so every
+        OTHER spectrum would appear to slide and compress while the user was
+        adjusting a single one. That regression was fixed once already on the
+        y axis; it is exactly as wrong here.
+
+        The consequence is deliberate: shift far enough and the trace runs off
+        the edge of the view, rather than the view chasing it. The spin box is
+        bounded to a fraction of the spectrum width so that cannot happen by
+        accident.
+        """
+        if not (0 <= index < len(self._traces)):
+            return
+        if not np.isfinite(offset):
+            return
+        self.push_undo(("x_offset", index))
+        self._traces[index].x_offset = float(offset)
+        self._redraw()
+        self.tracesChanged.emit()
+
+    def nudge_x_offset(self, index: int, delta: float) -> None:
+        if not (0 <= index < len(self._traces)):
+            return
+        self.set_x_offset(index, self._traces[index].x_offset + float(delta))
+
+    def clear_x_offsets(self) -> None:
+        """Return every spectrum to its true chemical shift.
+
+        Offered as one action because that is how it is needed: having aligned
+        several traces by eye, a user checking whether a difference is real
+        wants them all back at once, not one at a time.
+        """
+        if not any(t.x_offset for t in self._traces):
+            return
+        self.push_undo(("x_offset_all", None))
+        for trace in self._traces:
+            trace.x_offset = 0.0
+        self._redraw()
+        self.tracesChanged.emit()
+
+    def drawn_ppm(self, trace) -> np.ndarray:
+        """The ppm axis AS DRAWN for this trace, shift included.
+
+        A single place where the shift is applied, so the plot, the exports
+        and the frame calculation cannot disagree about where a trace is.
+        """
+        if not trace.x_offset:
+            return trace.ppm
+        return np.asarray(trace.ppm, dtype=float) + float(trace.x_offset)
+
     def _on_scroll(self, event) -> None:
         """Wheel over the plot scales the selected trace vertically.
 
@@ -638,8 +714,8 @@ class SpectrumCanvas(QWidget):
     def _snapshot(self) -> dict:
         return {
             "traces": [
-                (t, t.y_scale, t.y_offset, t.visible, t.color, t.line_width,
-                 t.line_style, t.label_pos, t.label_offset)
+                (t, t.y_scale, t.y_offset, t.x_offset, t.visible, t.color,
+                 t.line_width, t.line_style, t.label_pos, t.label_offset)
                 for t in self._traces
             ],
             "ppm": self._ppm_range,
@@ -653,9 +729,10 @@ class SpectrumCanvas(QWidget):
 
     def _apply_snapshot(self, snap: dict) -> None:
         self._traces = [entry[0] for entry in snap["traces"]]
-        for (trace, scale, offset, visible, color, width, style,
+        for (trace, scale, offset, x_offset, visible, color, width, style,
              label_pos, label_offset) in snap["traces"]:
             trace.y_scale, trace.y_offset, trace.visible = scale, offset, visible
+            trace.x_offset = x_offset
             trace.color, trace.line_width, trace.line_style = color, width, style
             trace.label_pos, trace.label_offset = label_pos, label_offset
         self._ppm_range = snap["ppm"]
@@ -1128,7 +1205,7 @@ class SpectrumCanvas(QWidget):
             if selected is not None and trace is selected and len(visible) > 1:
                 width = width * 1.9   # make the selected trace obvious
             self._axes.plot(
-                trace.ppm, y, color=trace.color, linewidth=width,
+                self.drawn_ppm(trace), y, color=trace.color, linewidth=width,
                 linestyle=trace.line_style, label=trace.label,
                 alpha=self._opacity,
             )
@@ -1280,7 +1357,7 @@ class SpectrumCanvas(QWidget):
             for trace in one_d:
                 y = (trace.intensity * trace.y_scale) + trace.y_offset
                 one_d_axes.plot(
-                    trace.ppm, y, color=trace.color,
+                    self.drawn_ppm(trace), y, color=trace.color,
                     linewidth=trace.line_width, linestyle=trace.line_style,
                     label=trace.label,
                 )
@@ -1337,7 +1414,7 @@ class SpectrumCanvas(QWidget):
             for trace in one_d:
                 y = (trace.intensity * trace.y_scale) + trace.y_offset
                 ax.plot(
-                    trace.ppm, y, color=trace.color,
+                    self.drawn_ppm(trace), y, color=trace.color,
                     linewidth=trace.line_width,
                     linestyle=trace.line_style, label=trace.label,
                 )
@@ -2147,6 +2224,7 @@ class SpectrumCanvas(QWidget):
                     "visible": t.visible,
                     "y_scale": t.y_scale,
                     "y_offset": t.y_offset,
+                    "x_offset": t.x_offset,
                     "label_pos": list(t.label_pos) if t.label_pos else None,
                     "label_offset": list(t.label_offset),
                     "contour_levels": t.contour_levels,
@@ -2217,6 +2295,9 @@ class SpectrumCanvas(QWidget):
             trace.visible = bool(entry.get("visible", True))
             trace.y_scale = float(entry.get("y_scale", 1.0))
             trace.y_offset = float(entry.get("y_offset", 0.0))
+            # Absent from sessions written before this feature existed; 0.0 is
+            # the correct reading of an older file, which carried no shift.
+            trace.x_offset = float(entry.get("x_offset", 0.0))
             pos = entry.get("label_pos")
             trace.label_pos = tuple(pos) if pos else None
             trace.label_offset = tuple(entry.get("label_offset", (0.0, 0.0)))
@@ -2330,6 +2411,7 @@ class SpectrumCanvas(QWidget):
         trace.visible = bool(entry.get("visible", True))
         trace.y_scale = float(entry.get("y_scale", 1.0))
         trace.y_offset = float(entry.get("y_offset", 0.0))
+        trace.x_offset = float(entry.get("x_offset", 0.0))
         pos = entry.get("label_pos")
         trace.label_pos = tuple(pos) if pos else None
         trace.label_offset = tuple(entry.get("label_offset", (0.0, 0.0)))

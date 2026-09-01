@@ -32,6 +32,7 @@ class SpectrumListPanel(QWidget):
     selectionChanged = Signal(int)            # index, -1 for none
     yScaleChanged = Signal(int, float)        # index, scale
     yOffsetChanged = Signal(int, float)       # index, vertical offset
+    xOffsetChanged = Signal(int, float)       # index, ppm shift
     visibilityToggled = Signal(int, bool)     # index, visible
     removeRequested = Signal(int)             # index
     moveToBottomRequested = Signal(int)       # index
@@ -87,6 +88,24 @@ class SpectrumListPanel(QWidget):
             "Dragging the spectrum on the plot changes this too."
         )
         self._offset_spin.valueChanged.connect(self._on_offset_changed)
+
+        self._x_offset_spin = QDoubleSpinBox()
+        # Chemical shifts are small numbers with meaningful decimals: a
+        # referencing correction is routinely 0.01-0.05 ppm, so 1 decimal (as
+        # the Y offset uses) would round most real corrections to zero.
+        self._x_offset_spin.setDecimals(4)
+        self._x_offset_spin.setSingleStep(0.01)
+        # Resized to the spectrum in set_traces; this is only a sane default
+        # before any trace is loaded.
+        self._x_offset_spin.setRange(-100.0, 100.0)
+        self._x_offset_spin.setSuffix(" ppm")
+        self._x_offset_spin.setToolTip(
+            "Shift the selected spectrum along the ppm axis.\n"
+            "For aligning spectra referenced slightly differently.\n"
+            "The axis still shows true chemical shift, so a shifted\n"
+            "spectrum is marked in this list and in the legend."
+        )
+        self._x_offset_spin.valueChanged.connect(self._on_x_offset_changed)
 
         self._color_button = QPushButton("Colour")
         self._color_button.clicked.connect(self._on_color_clicked)
@@ -173,6 +192,10 @@ class SpectrumListPanel(QWidget):
         offset_row.addWidget(QLabel("Y offset"))
         offset_row.addWidget(self._offset_spin, 1)
 
+        x_offset_row = QHBoxLayout()
+        x_offset_row.addWidget(QLabel("X offset"))
+        x_offset_row.addWidget(self._x_offset_spin, 1)
+
         label_row = QHBoxLayout()
         label_row.addWidget(QLabel("Name  x"))
         label_row.addWidget(self._label_dx, 1)
@@ -200,6 +223,7 @@ class SpectrumListPanel(QWidget):
         layout.addWidget(self._list, 1)
         layout.addLayout(scale_row)
         layout.addLayout(offset_row)
+        layout.addLayout(x_offset_row)
         layout.addLayout(label_row)
         contour_grid = QGridLayout()
         contour_grid.setHorizontalSpacing(4)
@@ -238,7 +262,16 @@ class SpectrumListPanel(QWidget):
             previous = {i.row() for i in self._list.selectedIndexes()}
             self._list.clear()
             for trace in traces:
-                item = QListWidgetItem(trace.label)
+                # A shifted spectrum says so, in the list. An x offset moves
+                # a trace along the CHEMICAL SHIFT axis, so its peaks no
+                # longer read at their true values -- that has to be visible
+                # while working, or a shift applied to align two spectra gets
+                # forgotten and ends up in a published figure.
+                shift = float(getattr(trace, "x_offset", 0.0) or 0.0)
+                text = trace.label
+                if shift:
+                    text = f"{trace.label}  [{shift:+.3f} ppm]"
+                item = QListWidgetItem(text)
                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
                 item.setCheckState(Qt.Checked if trace.visible else Qt.Unchecked)
                 item.setForeground(_qcolor(trace.color))
@@ -285,6 +318,21 @@ class SpectrumListPanel(QWidget):
                         limit = span * 5.0
                         self._offset_spin.setRange(-limit, limit)
                 self._offset_spin.setValue(getattr(trace, "y_offset", 0.0))
+                # Step and bound the ppm shift from the spectrum's own width.
+                # A fixed range would be wrong in both directions: 100 ppm is
+                # absurd for a 1H spectrum spanning 12, and far too small for
+                # 13C spanning 200.
+                ppm = getattr(trace, "ppm", None)
+                if ppm is not None and getattr(ppm, "size", 0):
+                    import numpy as _np
+                    width = abs(float(_np.nanmax(ppm)) - float(_np.nanmin(ppm)))
+                    if _np.isfinite(width) and width > 0:
+                        self._x_offset_spin.setSingleStep(width * 0.002)
+                        # Half a spectrum width. Beyond that the trace is
+                        # mostly off the plot and the number is no longer a
+                        # correction, it is a mistake.
+                        self._x_offset_spin.setRange(-width * 0.5, width * 0.5)
+                self._x_offset_spin.setValue(getattr(trace, "x_offset", 0.0))
                 self._set_controls_enabled(True)
             else:
                 self._set_controls_enabled(False)
@@ -294,6 +342,7 @@ class SpectrumListPanel(QWidget):
     def _set_controls_enabled(self, enabled: bool) -> None:
         self._scale_spin.setEnabled(enabled)
         self._offset_spin.setEnabled(enabled)
+        self._x_offset_spin.setEnabled(enabled)
         self._label_dx.setEnabled(enabled)
         self._label_dy.setEnabled(enabled)
         self._color_button.setEnabled(enabled)
@@ -326,6 +375,13 @@ class SpectrumListPanel(QWidget):
         row = self._list.currentRow()
         if row >= 0:
             self.yOffsetChanged.emit(row, float(value))
+
+    def _on_x_offset_changed(self, value: float) -> None:
+        if self._updating:
+            return
+        row = self._list.currentRow()
+        if row >= 0:
+            self.xOffsetChanged.emit(row, float(value))
 
     def _on_color_clicked(self) -> None:
         row = self._list.currentRow()

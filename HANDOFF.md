@@ -374,6 +374,23 @@ Kept for a possible future "precise layout" mode. Do not assume they run.
 
 ---
 
+### 4.t  X offset obeys the same no-re-fit rule as Y offset
+
+`set_x_offset` must not clear `_ppm_range` or recompute the x limits. The
+reasoning is identical to the y offset section above: re-fitting so a shifted
+trace stays framed widens the view whenever one spectrum is nudged, so every
+OTHER spectrum slides and compresses while the user adjusts one. Do not "fix"
+a trace running off the edge by re-fitting -- that is the worse bug, and it
+has already been made once on the y axis.
+
+The shift is applied in `drawn_ppm()` alone and never written into
+`trace.ppm`. Keep it that way: the raw array is the true chemical shift, and
+readout, exports and differences all depend on it staying true.
+
+The on-plot label states a non-zero shift on purpose. Removing that annotation
+means a figure can claim a peak sits at a shift it does not, with nothing on
+the figure to say otherwise. If it becomes a preference, default it to ON.
+
 ### 4.x  Directory walking follows symlinks, and must keep loop protection
 
 All three walkers used `is_dir(follow_symlinks=False)` until 0.5.9. That made
