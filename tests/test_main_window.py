@@ -4,7 +4,6 @@ This is what proves the package installs into something runnable, not just
 that its pieces import cleanly in isolation.
 """
 
-from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QSettings
@@ -173,83 +172,127 @@ def test_toolbar_has_the_expected_actions(qtbot):
     assert len(toolbars) == 1
     labels = [a.text() for a in toolbars[0].actions() if a.text()]
     assert any("Add Data Root" in t for t in labels)
-    assert any("New Figure" in t for t in labels)
+    assert any("Refresh All" in t for t in labels)
+    # One toggle whose label names the CURRENT mode, plus Clear.
+    assert "Overlay" in labels and "Stacked" in labels
+    assert any("Clear" in t for t in labels)
     assert any("Preferences" in t for t in labels)
     assert any("About" in t for t in labels)
+    assert any(t == "Quit" for t in labels)
 
 
-def test_toolbar_is_not_movable(qtbot):
-    """A fixed toolbar matches the reference app's static button row and
-    avoids users accidentally detaching it into a floating window."""
+def test_toolbar_quit_is_the_last_action(qtbot):
+    """Matches the reference app: Quit sits at the far right, separated
+    from everything else by the stretch spacer."""
     from PySide6.QtWidgets import QToolBar
 
     window = MainWindow()
     qtbot.addWidget(window)
     toolbar = window.findChild(QToolBar)
-    assert not toolbar.isMovable()
+    actions_with_text = [a for a in toolbar.actions() if a.text()]
+    assert actions_with_text[-1].text() == "Quit"
 
 
-def test_central_widget_is_the_vertical_split(qtbot):
-    window = MainWindow()
-    qtbot.addWidget(window)
-    assert window.centralWidget() is window._vertical_split
+def test_toolbar_quit_action_closes_the_window(qtbot):
+    from PySide6.QtWidgets import QToolBar
 
-
-def test_browser_is_the_left_panel(qtbot):
-    """Left panel = explorer, per the requested layout."""
-    window = MainWindow()
-    qtbot.addWidget(window)
-    assert window._horizontal_split.widget(0) is window._browser
-
-
-def test_canvas_placeholder_is_the_centre_panel(qtbot):
-    window = MainWindow()
-    qtbot.addWidget(window)
-    assert window._horizontal_split.widget(1) is window._canvas
-
-
-def test_adjustment_bar_is_below_the_split(qtbot):
-    """Bottom = adjustment, per the requested layout."""
-    window = MainWindow()
-    qtbot.addWidget(window)
-    assert window._vertical_split.widget(0) is window._horizontal_split
-    assert window._vertical_split.widget(1) is window._adjustment_bar
-
-
-def test_canvas_gets_more_space_than_the_browser(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()
-    sizes = window._horizontal_split.sizes()
-    assert sizes[1] > sizes[0]
+    assert window.isVisible()
+
+    toolbar = window.findChild(QToolBar)
+    quit_action = next(a for a in toolbar.actions() if a.text() == "Quit")
+    quit_action.trigger()
+
+    assert not window.isVisible()
 
 
-def test_new_figure_stub_does_not_raise(qtbot, monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
+def test_refresh_all_toolbar_action_actually_refreshes(qtbot, tmp_path):
+    """End-to-end through the real toolbar action, not just the browser
+    method directly: the reported bug, fixed, verified from the top of the
+    stack a user actually clicks."""
+    from PySide6.QtWidgets import QToolBar
 
-    captured = {}
-    monkeypatch.setattr(
-        QMessageBox,
-        "information",
-        staticmethod(lambda parent, title, text: captured.update(title=title, text=text)),
-    )
+    root_dir = tmp_path / "600"
+    root_dir.mkdir(parents=True)
+    (root_dir / "sample_a" / "11").mkdir(parents=True)
+    (root_dir / "sample_a" / "11" / "acqus").write_text("##$NUC1= <1H>\n##END=\n")
+    (root_dir / "sample_a" / "11" / "fid").write_bytes(b"\x00")
+    (root_dir / "sample_a" / "11" / "pdata" / "1").mkdir(parents=True)
+
+    settings_module.save_data_roots([DataRoot(name="600", path=root_dir)])
     window = MainWindow()
     qtbot.addWidget(window)
-    window._new_figure()
-    assert "not" in captured["title"].lower()
+    root_index = window._browser.model.index(0, 0)
+    qtbot.waitUntil(lambda: window._browser.model.rowCount(root_index) == 1, timeout=2000)
+
+    (root_dir / "sample_b" / "12").mkdir(parents=True)
+    (root_dir / "sample_b" / "12" / "acqus").write_text("##$NUC1= <1H>\n##END=\n")
+    (root_dir / "sample_b" / "12" / "fid").write_bytes(b"\x00")
+    (root_dir / "sample_b" / "12" / "pdata" / "1").mkdir(parents=True)
+
+    toolbar = window.findChild(QToolBar)
+    refresh_action = next(a for a in toolbar.actions() if a.text() == "Refresh All")
+    refresh_action.trigger()
+
+    qtbot.waitUntil(lambda: window._browser.model.rowCount(root_index) == 2, timeout=2000)
 
 
-def test_preferences_stub_does_not_raise(qtbot, monkeypatch):
-    from PySide6.QtWidgets import QMessageBox
 
-    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: None))
+
+# --- drag straight onto the canvas (no layout step) -------------------------
+
+
+def test_canvas_is_a_live_spectrum_canvas_from_the_start(qtbot):
+    """No 'New Figure' step: the centre widget is a real, drop-ready spectrum
+    canvas as soon as the window opens."""
+    from helspin.ui.spectrum_canvas import SpectrumCanvas
+
     window = MainWindow()
     qtbot.addWidget(window)
-    window._preferences()  # must not raise
+    assert isinstance(window._canvas, SpectrumCanvas)
 
 
-def test_adjustment_bar_starts_disabled(qtbot):
-    """No figure exists yet in this build, so there is nothing to adjust."""
+def test_adjustment_bar_is_enabled_from_the_start(qtbot):
+    """The canvas is always live, so the ppm controls are usable immediately
+    rather than gated behind creating a figure."""
     window = MainWindow()
     qtbot.addWidget(window)
-    assert not window._adjustment_bar._full_button.isEnabled()
+    assert window._adjustment_bar._full_button.isEnabled()
+
+
+def test_arrangement_buttons_show_which_mode_is_active(qtbot):
+    """Two checkable buttons with exactly one lit, rather than a single button
+    whose label was ambiguous about current-state vs action."""
+    from helspin.ui.spectrum_canvas import SpectrumCanvas
+
+    window = MainWindow()
+    qtbot.addWidget(window)
+
+    assert window._canvas.arrangement() == SpectrumCanvas.ARRANGEMENT_OVERLAY
+    assert window._overlay_action.isChecked()
+    assert not window._stacked_action.isChecked()
+
+    window._use_stacked()
+    assert window._canvas.arrangement() == SpectrumCanvas.ARRANGEMENT_STACKED
+    assert window._stacked_action.isChecked()
+    assert not window._overlay_action.isChecked()
+
+    window._use_overlay()
+    assert window._overlay_action.isChecked()
+    assert not window._stacked_action.isChecked()
+
+def test_clear_canvas_removes_all_traces(qtbot):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._clear_canvas()
+    assert window._canvas.traces == []
+
+
+def test_load_failure_is_reported_not_silent(qtbot):
+    """A file that will not load must surface a message rather than vanishing."""
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._on_load_failed("/data/sample/99", "no pdata/1")
+    assert "99" in window.statusBar().currentMessage()

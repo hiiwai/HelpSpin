@@ -46,9 +46,9 @@ def make_expno(sample: Path, expno: int, procnos=(1,), dim=1) -> Path:
 def tree(tmp_path):
     """Mirrors the real layout, extra 'data' segment and all:
 
-        <root>/data/IW/nmr/data/260728_PXR-SRC-1_26-1_FT2/{11,12,21}
+        <root>/data/IW/nmr/data/260728_SampleB_25uM_FT2/{11,12,21}
     """
-    sample = tmp_path / "data" / "IW" / "nmr" / "data" / "260728_PXR-SRC-1_26-1_FT2"
+    sample = tmp_path / "data" / "IW" / "nmr" / "data" / "260728_SampleB_25uM_FT2"
     make_expno(sample, 11)
     make_expno(sample, 12)
     make_expno(sample, 21, dim=2)
@@ -266,7 +266,7 @@ def test_normalise_does_not_strip_a_root():
 
 def test_foreign_path_detected(monkeypatch):
     monkeypatch.setattr("os.name", "posix")
-    assert is_foreign_path(r"D:\NMR600data\ABC\11")
+    assert is_foreign_path(r"D:\NMRdata\ABC\11")
     assert is_foreign_path(r"\\host\share\x")
     assert not is_foreign_path("/Volumes/data/ABC/11")
 
@@ -301,7 +301,7 @@ def test_topspin_windows_path_reconstruction():
     the caller must report 'cannot be resolved on this platform' rather than
     fail silently. So assert the shape, not the host-flavoured parts.
     """
-    got = parse_topspin_identifier(r"ABC 11 1 D:\NMR600data IW")
+    got = parse_topspin_identifier(r"ABC 11 1 D:\NMRdata IW")
     text = str(got.to_path())
     assert text.endswith("11")
     assert "ABC" in text and "IW" in text

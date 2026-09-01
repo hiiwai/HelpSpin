@@ -275,8 +275,8 @@ def test_all_tokens_missing_yields_empty_string():
 def test_metadata_tokens_render():
     t = LabelTemplate("{project} {fraction} {solvent}")
     assert (
-        t.render({"project": "PXR-SRC-1", "fraction": "FT2", "solvent": "CDCl3"})
-        == "PXR-SRC-1 FT2 CDCl3"
+        t.render({"project": "SampleB", "fraction": "FT2", "solvent": "CDCl3"})
+        == "SampleB FT2 CDCl3"
     )
 
 

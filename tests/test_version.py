@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 import helspin
-from helspin.__main__ import MainWindow, _parse_args, APP_TITLE
+from helspin.__main__ import APP_TITLE, MainWindow, _parse_args
 
 pytestmark = pytest.mark.usefixtures("qapp")
 

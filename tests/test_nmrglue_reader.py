@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from helspin.domain.errors import DatasetNotFound, UnsupportedDimension
-from helspin.domain.project import Dimensionality
 from helspin.domain.ports import DataRoot
+from helspin.domain.project import Dimensionality
 from helspin.infrastructure.nmrglue_reader import NmrglueReader, read_acqus
 
 ACQUS_TEMPLATE = """##TITLE= Parameter file, TopSpin 3.6
@@ -108,9 +108,9 @@ def test_probe_extracts_the_expected_fields(tmp_path, reader):
 
 
 def test_probe_reads_the_title(tmp_path, reader):
-    expno = make_expno(tmp_path, 11, title="PXR-SRC-1 fraction 2")
+    expno = make_expno(tmp_path, 11, title="SampleB fraction 2")
     info = reader.probe(expno)
-    assert info.title == "PXR-SRC-1 fraction 2"
+    assert info.title == "SampleB fraction 2"
 
 
 def test_probe_with_no_title_file(tmp_path, reader):
@@ -241,13 +241,44 @@ def test_probe_procnos_lists_available_procnos(tmp_path, reader):
 # --- array loading is deferred ------------------------------------------------
 
 
-def test_read_1d_is_not_yet_implemented(tmp_path, reader):
-    expno = make_expno(tmp_path, 11)
-    with pytest.raises(NotImplementedError):
-        reader.read_1d(expno)
+def test_read_1d_loads_processed_data(tmp_path):
+    """read_1d is implemented now (rendering milestone): it loads the
+    PROCESSED spectrum from pdata, which is what TopSpin shows and what a
+    comparison figure should plot."""
+    import numpy as np
+
+    from helspin.infrastructure.nmrglue_reader import NmrglueReader
+
+    expno = tmp_path / "11"
+    pdata = expno / "pdata" / "1"
+    pdata.mkdir(parents=True)
+    n = 512
+    x = np.arange(n)
+    spec = 1500.0 / (1 + ((x - 200) / 5.0) ** 2)
+    (expno / "acqus").write_text(
+        "##$NUC1= <1H>\n##$PULPROG= <zg30>\n##$NS= 8\n##$RG= 64\n"
+        "##$SW_h= 6000.0\n##$SFO1= 600.13\n##$O1= 2400.0\n##$BF1= 600.13\n##END=\n"
+    )
+    (pdata / "procs").write_text(
+        f"##$SI= {n}\n##$SW_p= 6000.0\n##$SF= 600.13\n##$OFFSET= 12.0\n"
+        "##$NC_proc= 0\n##$BYTORDP= 0\n##$XDIM= 0\n##END=\n"
+    )
+    (pdata / "1r").write_bytes(spec.astype("<i4").tobytes())
+
+    s = NmrglueReader().read_1d(expno)
+    assert s.real.size == n
+    assert s.axis.size == n
+    assert s.ns == 8
+    assert s.rg == 64.0
+    ppm = s.axis.ppm_scale()
+    assert ppm[0] > ppm[-1]     # ppm axes descend
 
 
-def test_read_2d_is_not_yet_implemented(tmp_path, reader):
-    expno = make_expno(tmp_path, 21, dim=2)
-    with pytest.raises(NotImplementedError):
-        reader.read_2d(expno)
+def test_read_1d_missing_pdata_raises(tmp_path):
+    from helspin.domain.errors import DatasetNotFound
+    from helspin.infrastructure.nmrglue_reader import NmrglueReader
+
+    expno = tmp_path / "11"
+    expno.mkdir(parents=True)
+    with pytest.raises(DatasetNotFound):
+        NmrglueReader().read_1d(expno)

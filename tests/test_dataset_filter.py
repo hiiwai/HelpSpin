@@ -26,21 +26,30 @@ def make_expno(sample: Path, expno: int, pulprog: str) -> Path:
     d.mkdir(parents=True, exist_ok=True)
     (d / "acqus").write_text(ACQUS.format(pulprog=pulprog))
     (d / "fid").write_bytes(b"\x00" * 8)
+    procno = d / "pdata" / "1"
+    procno.mkdir(parents=True, exist_ok=True)
+    (procno / "1r").write_bytes(b"\x00" * 8)
     return d
 
 
 @pytest.fixture
 def populated(tmp_path):
     root_dir = tmp_path / "600"
-    make_expno(root_dir / "260728_PXR-SRC-1_26-1_FT2", 11, "zg30")
-    make_expno(root_dir / "260728_PXR-SRC-1_26-1_FT2", 21, "cosygpppqf")
+    make_expno(root_dir / "260728_SampleB_25uM_FT2", 11, "zg30")
+    make_expno(root_dir / "260728_SampleB_25uM_FT2", 21, "cosygpppqf")
     make_expno(root_dir / "other_sample", 12, "zgpg30")
 
     model = DatasetTreeModel([DataRoot(name="600", path=root_dir)])
     root_idx = model.index(0, 0)
     model.fetchMore(root_idx)
     for r in range(model.rowCount(root_idx)):
-        model.fetchMore(model.index(r, 0, root_idx))
+        sample_idx = model.index(r, 0, root_idx)
+        model.fetchMore(sample_idx)
+        # Expno metadata (incl. PULPROG) is loaded lazily in the background
+        # now; probe synchronously here so the PULPROG-filter tests have data
+        # to match against, mirroring what DatasetPopulator does per row.
+        for child in sample_idx.internalPointer().children or []:
+            model.probe_node(child)
     return model
 
 
@@ -69,21 +78,21 @@ def visible_names(proxy, parent=None):
 def test_empty_filter_shows_everything(populated):
     proxy = proxy_for(populated, "")
     names = visible_names(proxy)
-    assert "260728_PXR-SRC-1_26-1_FT2" in names
+    assert "260728_SampleB_25uM_FT2" in names
     assert "other_sample" in names
     assert {"11", "21", "12"} <= set(names)
 
 
 def test_filter_by_sample_name_substring(populated):
-    proxy = proxy_for(populated, "PXR-SRC")
+    proxy = proxy_for(populated, "SampleB")
     names = visible_names(proxy)
-    assert "260728_PXR-SRC-1_26-1_FT2" in names
+    assert "260728_SampleB_25uM_FT2" in names
     assert "other_sample" not in names
 
 
 def test_filter_is_case_insensitive(populated):
-    proxy = proxy_for(populated, "pxr-src")
-    assert "260728_PXR-SRC-1_26-1_FT2" in visible_names(proxy)
+    proxy = proxy_for(populated, "sampleb")
+    assert "260728_SampleB_25uM_FT2" in visible_names(proxy)
 
 
 def test_filter_by_pulprog_keeps_the_parent_sample_visible(populated):
@@ -91,7 +100,7 @@ def test_filter_by_pulprog_keeps_the_parent_sample_visible(populated):
     this is the whole point of recursive filtering in a tree."""
     proxy = proxy_for(populated, "cosygpppqf")
     names = visible_names(proxy)
-    assert "260728_PXR-SRC-1_26-1_FT2" in names
+    assert "260728_SampleB_25uM_FT2" in names
     assert "21" in names
     assert "11" not in names
     assert "other_sample" not in names

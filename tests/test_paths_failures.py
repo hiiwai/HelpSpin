@@ -8,8 +8,6 @@ failed state and the window stays responsive.
 
 from pathlib import Path
 
-import pytest
-
 from helspin.domain.paths import (
     expnos_in,
     is_expno,

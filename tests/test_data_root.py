@@ -4,7 +4,6 @@ from pathlib import Path
 
 from helspin.domain.ports import DataRoot, SampleNamePattern
 
-
 # --- SampleNamePattern -------------------------------------------------------
 
 
@@ -15,14 +14,14 @@ def test_disabled_pattern_parses_nothing():
 
 def test_enabled_pattern_parses_named_groups():
     p = SampleNamePattern(
-        regex=r"(?P<date>\d{6})_(?P<project>[A-Z0-9-]+)_(?P<batch>[\d-]+)_(?P<fraction>\w+)",
+        regex=r"(?P<date>\d{6})_(?P<project>[A-Za-z0-9-]+)_(?P<batch>[\w-]+)_(?P<fraction>\w+)",
         enabled=True,
     )
-    got = p.parse("260728_PXR-SRC-1_26-1_FT2")
+    got = p.parse("260728_SampleB_25uM_FT2")
     assert got == {
         "date": "260728",
-        "project": "PXR-SRC-1",
-        "batch": "26-1",
+        "project": "SampleB",
+        "batch": "25uM",
         "fraction": "FT2",
     }
 

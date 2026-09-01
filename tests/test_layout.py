@@ -23,7 +23,6 @@ from helspin.domain.project import (
     DatasetId,
     DifferenceBox,
     LegendBox,
-    SpectrumBox,
     add_slot_1d,
     new_id,
 )

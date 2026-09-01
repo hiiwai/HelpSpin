@@ -11,7 +11,6 @@ from helspin.domain.metadata import (
     strip_jcamp,
 )
 
-
 # --- strip_jcamp -------------------------------------------------------------
 
 
