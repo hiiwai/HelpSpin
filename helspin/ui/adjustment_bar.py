@@ -15,6 +15,8 @@ the view half, built now so the shell layout is real rather than a mockup.
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
+
+from ..core.settings import load_recent_ranges, save_recent_ranges
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -44,7 +46,11 @@ class AdjustmentBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._recent: list[tuple[float, float]] = []
+        # Loaded, not empty. Recent ranges previously lived only in memory,
+        # so they vanished on quit -- a "recent" list that never survived long
+        # enough to be recent. They are persisted now, and seeded with useful
+        # defaults so the control does something on a first run.
+        self._recent: list[tuple[float, float]] = load_recent_ranges()
 
         self._full_button = QPushButton("Full")
         self._full_button.clicked.connect(self._on_full_clicked)
@@ -93,6 +99,7 @@ class AdjustmentBar(QWidget):
         layout.addWidget(self._apply_button)
         layout.addStretch(1)
         layout.addWidget(self._recent_combo)
+        self._refresh_recent_combo()
 
         # --- 2D controls: a second, independent range for the indirect
         # dimension. Hidden in 1D mode, because F1 is meaningless there.
@@ -266,6 +273,12 @@ class AdjustmentBar(QWidget):
             self._recent.remove(entry)
         self._recent.insert(0, entry)
         self._recent = self._recent[:MAX_RECENT_RANGES]
+        # Written out on every change rather than at shutdown: a crash or a
+        # force-quit should not be the thing that loses the list.
+        save_recent_ranges(self._recent)
+        self._refresh_recent_combo()
+
+    def _refresh_recent_combo(self) -> None:
         self._recent_combo.clear()
         # A remembered range is written the way a range is written -- from the
         # smaller number to the larger one ("0 -> 10 ppm"). The two BOXES keep

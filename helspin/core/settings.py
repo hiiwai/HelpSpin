@@ -8,6 +8,7 @@ else ships with a working default and has no settings surface yet.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 from PySide6.QtCore import QSettings
@@ -79,9 +80,6 @@ def save_data_roots(roots: list[DataRoot]) -> None:
     settings = _settings()
     settings.setValue(_KEY, payload)
     settings.sync()
-
-
-_STYLES_KEY = "plot/slot_styles"
 
 
 _STYLES_KEY = "appearance/slot_styles"
@@ -184,3 +182,61 @@ def save_display_prefs(values: dict) -> None:
     settings = _settings()
     settings.setValue(_DISPLAY_KEY, json.dumps(keep))
     settings.sync()
+
+
+_RECENT_RANGES_KEY = "plot/recent_ppm_ranges"
+
+# Seeded rather than starting empty. A first run offered an empty "Recent
+# ranges" list, which is a control that does nothing until you have already
+# done by hand the thing it exists to save you doing. These three cover the
+# common windows: the negative region, a standard 1H sweep, and a wide view
+# that takes in both.
+#
+# Stored high-to-low because the ppm axis descends; the values a user types
+# in either order are normalised the same way on Apply.
+DEFAULT_RECENT_RANGES: list[tuple[float, float]] = [
+    (-1.0, -12.0),
+    (10.0, 0.0),
+    (15.0, -2.0),
+]
+
+
+def load_recent_ranges() -> list[tuple[float, float]]:
+    """Recent ppm ranges, most recent first.
+
+    Falls back to the defaults when nothing is stored AND when the stored
+    value is unusable. A corrupted or hand-edited settings entry should cost
+    the user a stale list, not an empty control or a crash on startup.
+    """
+    raw = _settings().value(_RECENT_RANGES_KEY)
+    if not raw:
+        return list(DEFAULT_RECENT_RANGES)
+    try:
+        entries = json.loads(raw)
+    except (TypeError, ValueError):
+        return list(DEFAULT_RECENT_RANGES)
+    ranges: list[tuple[float, float]] = []
+    for entry in entries if isinstance(entries, list) else []:
+        try:
+            left, right = float(entry[0]), float(entry[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue        # skip the bad row, keep the good ones
+        if not (math.isfinite(left) and math.isfinite(right)):
+            continue
+        if left == right:
+            continue        # a zero-width window would draw nothing
+        ranges.append((left, right))
+    return ranges or list(DEFAULT_RECENT_RANGES)
+
+
+def save_recent_ranges(ranges) -> None:
+    """Persist the recent ppm ranges."""
+    clean = []
+    for entry in ranges:
+        try:
+            left, right = float(entry[0]), float(entry[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+        if math.isfinite(left) and math.isfinite(right) and left != right:
+            clean.append([left, right])
+    _settings().setValue(_RECENT_RANGES_KEY, json.dumps(clean))

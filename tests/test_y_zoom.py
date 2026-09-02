@@ -1087,3 +1087,79 @@ def test_bottom_all_works_while_magnified(canvas):
     low, high = canvas._axes.get_ylim()
     for base in _baselines(canvas):
         assert low <= base <= high
+
+
+# --- labels sit beside their own spectrum ----------------------------------
+
+
+def test_stacked_labels_follow_their_lanes(canvas):
+    """Reported: every name sat in a column at the top, so the reader had to
+    match colours to work out which name went with which spectrum."""
+    _stacked(canvas, n=3)
+    heights = [artist.get_position()[1] for artist, _ in canvas._label_artists]
+
+    assert len(heights) == 3
+    assert heights == sorted(heights), "labels must rise with their lanes"
+    assert max(heights) - min(heights) > 0.3, (
+        f"labels are still bunched together: {heights}"
+    )
+
+
+def test_each_label_sits_near_its_own_trace(canvas):
+    """Not just spread out -- spread out in the RIGHT places."""
+    _stacked(canvas, n=3)
+    low, high = canvas._axes.get_ylim()
+    step = canvas._stack_step
+
+    for i, (artist, trace) in enumerate(canvas._label_artists):
+        baseline_fraction = ((trace.y_offset + step * i) - low) / (high - low)
+        assert abs(artist.get_position()[1] - baseline_fraction) < 0.12, (
+            "a label drifted away from its own lane"
+        )
+
+
+def test_overlay_labels_stay_in_the_corner_column(canvas):
+    """Overlay has one shared baseline, so there is no per-spectrum height to
+    sit beside; the column remains the only sensible arrangement."""
+    _add(canvas, _trace("A"), _trace("B"), _trace("C"))
+    canvas.set_arrangement("overlay")
+    canvas._redraw()
+
+    heights = [a.get_position()[1] for a, _ in canvas._label_artists]
+    assert max(heights) - min(heights) < 0.2, "overlay labels should stack"
+
+
+def test_scaling_a_spectrum_does_not_drag_its_label(canvas):
+    """The bug the fixed-corner placement originally fixed. Lane labels are
+    anchored to the BASELINE, which does not move when a trace is scaled, so
+    this must stay true."""
+    _stacked(canvas, n=3)
+    before = [a.get_position()[1] for a, _ in canvas._label_artists]
+
+    canvas.set_y_scale(1, 4.0)
+
+    after = [a.get_position()[1] for a, _ in canvas._label_artists]
+    assert after == pytest.approx(before)
+
+
+def test_magnifying_does_not_drag_labels(canvas):
+    """Same guarantee under the stacked Y-zoom gain."""
+    _stacked(canvas, n=3)
+    before = [a.get_position()[1] for a, _ in canvas._label_artists]
+
+    for _ in range(8):
+        canvas._on_scroll(_Wheel(step=1, ydata=0.5))
+
+    after = [a.get_position()[1] for a, _ in canvas._label_artists]
+    assert after == pytest.approx(before)
+
+
+def test_a_dragged_label_still_honours_its_offset(canvas):
+    """Recomputing the anchor each draw must not throw away a manual move."""
+    _stacked(canvas, n=3)
+    canvas.set_label_offset(1, 0.2, 0.05)
+    moved = canvas._label_artists[1][0].get_position()
+
+    canvas._redraw()
+
+    assert canvas._label_artists[1][0].get_position() == pytest.approx(moved)

@@ -21,6 +21,73 @@ build can be traced back to a specific entry here.
 > pre-rendering — `0.1.0` (no suffix) is now reserved for when rendering
 > works. `0.0.1` corresponds to what was previously built as `0.1.0.dev1`.
 
+## [0.5.14] — 2026-09-01
+
+### Spectrum names now sit beside their own spectra
+
+Reported: in a stack every name was in a column at the top, so a reader had to
+match colours to work out which name belonged to which trace.
+
+In stacked mode each label is now placed at its own lane. Overlay is unchanged
+— there every trace shares one baseline, so there is no per-spectrum height to
+sit beside and the corner column remains the only sensible arrangement.
+
+The anchor is the lane **baseline**, not the trace's data maximum, and that
+distinction is the whole reason this is safe. An earlier version of HelSpin
+placed labels at the data maximum, so scaling a spectrum dragged its label
+around the plot; the fixed corner was the fix for that. A baseline does not
+move when a trace is scaled or magnified, so names stay put — two tests assert
+exactly that, one for `y_scale` and one for the stacked Y-zoom gain.
+
+Positions are recomputed each draw rather than cached, so a name follows its
+lane through a zoom. A label you have dragged keeps its offset; **Reset label
+positions** still returns everything to the default.
+
+### Recent ppm ranges are seeded, and survive a restart
+
+Two changes, because the second made the first worth having.
+
+They are now **persisted**. Recent ranges lived only in memory, so they
+vanished on quit — a "recent" list that never survived long enough to be
+recent. They are written on every change rather than at shutdown, so a crash
+is not what loses them.
+
+The list is also **seeded** rather than starting empty, with three common
+windows: `-1 to -12`, `0 to 10`, and `-2 to 15` ppm. Ranges you apply go to
+the front, so the list becomes yours with use.
+
+Stored high-to-low, since the ppm axis descends — the same normalisation the
+two boxes already apply, so typing either order gives the same result. A
+corrupt or hand-edited settings value falls back to the defaults, and a single
+unusable row is skipped rather than discarding the good ones.
+
+### Fixed: the test suite was writing to real user settings
+
+Found immediately, because adding persistence made it visible: recent ranges
+accumulated across runs until assertions broke, since each run inherited the
+previous run's state.
+
+The cause was that `tests/conftest.py` never isolated QSettings, so the suite
+had always been reading and writing the settings of whoever ran it. That is
+bad twice over — a test could quietly overwrite a developer's own data roots
+and preferences, and state left behind by one run leaked into the next.
+
+QSettings is now redirected to a temporary directory for the run, and cleared
+before each test. Per-test, not just per-run: sharing one directory across the
+suite means a test that persists something changes what the next test sees,
+and the order tests happen to run in starts deciding whether they pass.
+
+### Also removed
+
+A duplicate `_STYLES_KEY` in `core/settings.py`, left behind when the shadowed
+slot-style functions were removed in 0.5.11. The first definition was dead —
+the second immediately replaced it — but a reader would have had to check
+which one won.
+
+### Tests
+
+941, up from 931.
+
 ## [0.5.13] — 2026-09-01
 
 ### User manual

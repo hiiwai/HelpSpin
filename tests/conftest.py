@@ -38,3 +38,43 @@ def _isolated_index_cache(tmp_path_factory, monkeypatch):
     """
     cache = tmp_path_factory.mktemp("helspin-index-cache")
     monkeypatch.setenv("HELSPIN_CACHE_DIR", str(cache))
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_qsettings(tmp_path_factory):
+    """Point QSettings at a throwaway directory for the whole run.
+
+    Without this the suite reads and writes the REAL settings of whoever runs
+    it. That is bad twice over: a test can quietly overwrite a developer's own
+    data roots and preferences, and state left behind by one run leaks into
+    the next, so a test that passes on a clean machine fails on the second
+    run. Exactly that happened when recent ppm ranges became persistent --
+    they accumulated across runs until the assertions broke.
+
+    Session-scoped and autouse: it has to be in place before the first
+    QSettings call, and no test should have to remember to ask for it.
+    """
+    from PySide6.QtCore import QSettings
+
+    directory = tmp_path_factory.mktemp("qsettings")
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    for scope in (QSettings.Scope.UserScope, QSettings.Scope.SystemScope):
+        QSettings.setPath(QSettings.Format.IniFormat, scope, str(directory))
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _clean_qsettings(_isolate_qsettings):
+    """Start every test from empty settings.
+
+    Redirecting QSettings to a temp directory stops the suite touching the
+    real one, but the whole run still shares that directory -- so a test that
+    persists something changes what the NEXT test sees, and the order tests
+    happen to run in starts deciding whether they pass. Clearing per test is
+    what makes each one independent.
+    """
+    from PySide6.QtCore import QSettings
+
+    QSettings().clear()
+    QSettings("HelSpin", "HelSpin").clear()
+    yield

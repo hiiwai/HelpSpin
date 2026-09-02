@@ -79,13 +79,33 @@ def test_equal_left_and_right_is_rejected():
     assert received == []
 
 
+def test_recent_ranges_start_with_the_seeded_defaults(qtbot):
+    """The list is seeded rather than empty: a "recent ranges" control that
+    does nothing until you have already typed a range by hand is a control
+    that helps only after you no longer need it."""
+    from helspin.core.settings import DEFAULT_RECENT_RANGES
+
+    bar = AdjustmentBar()
+    assert bar._recent_combo.count() == len(DEFAULT_RECENT_RANGES)
+    shown = [bar._recent_combo.itemText(i)
+             for i in range(bar._recent_combo.count())]
+    assert any("-12.00" in t and "-1.00" in t for t in shown)
+    assert any("0.00" in t and "10.00" in t for t in shown)
+    assert any("-2.00" in t and "15.00" in t for t in shown)
+
+
 def test_recent_ranges_populate_after_a_valid_edit(qtbot):
+    from helspin.core.settings import DEFAULT_RECENT_RANGES
+
     bar = AdjustmentBar()
     bar.set_enabled_for_figure(True)
+    before = bar._recent_combo.count()
+    assert before == len(DEFAULT_RECENT_RANGES)
     bar._left_spin.setValue(8.5)
     bar._right_spin.setValue(6.0)
     bar._apply_button.click()
-    assert bar._recent_combo.count() == 1
+    # A new range is added to the seeded ones, at the front.
+    assert bar._recent_combo.count() == before + 1
     assert "8.50" in bar._recent_combo.itemText(0)
 
 
@@ -98,10 +118,11 @@ def test_recent_ranges_deduplicate_and_move_to_front(qtbot):
         bar._right_spin.setValue(right)
         bar._apply_button.click()
 
+    before = bar._recent_combo.count()      # the seeded defaults
     apply(8.5, 6.0)
     apply(4.0, 2.0)
     apply(8.5, 6.0)   # repeat of the first -- should move to front, not duplicate
-    assert bar._recent_combo.count() == 2
+    assert bar._recent_combo.count() == before + 2
     assert "8.50" in bar._recent_combo.itemText(0)
 
 
@@ -132,7 +153,8 @@ def test_selecting_an_out_of_range_recent_index_is_a_no_op(qtbot):
     bar = AdjustmentBar()
     received = []
     bar.rangeChanged.connect(lambda l, r: received.append((l, r)))
-    bar._on_recent_selected(5)   # nothing recorded yet
+    # Past the end of the seeded list, so there is nothing to select.
+    bar._on_recent_selected(len(bar._recent) + 3)
     assert received == []
 
 
@@ -243,3 +265,51 @@ def test_f1_range_normalises_and_emits(qtbot):
         bar._f1_apply.click()
     assert blocker.args == [120.0, 40.0]
     assert bar.f1_range() == (120.0, 40.0)
+
+
+def test_recent_ranges_persist_across_instances(qtbot):
+    """They were in-memory only, so a "recent" list never survived long enough
+    to be recent. Written on every change, not at shutdown, so a crash is not
+    what loses them."""
+    bar = AdjustmentBar()
+    bar.set_enabled_for_figure(True)
+    bar._left_spin.setValue(9.25)
+    bar._right_spin.setValue(3.5)
+    bar._apply_button.click()
+
+    fresh = AdjustmentBar()
+    assert "9.25" in fresh._recent_combo.itemText(0)
+
+
+def test_corrupt_stored_ranges_fall_back_to_defaults(qtbot, monkeypatch):
+    """A hand-edited or truncated settings value should cost a stale list, not
+    an empty control or a crash on startup."""
+    from helspin.core import settings as st
+
+    class _Bad:
+        def value(self, *_a, **_k):
+            return "{not json at all"
+
+        def setValue(self, *_a, **_k):
+            pass
+
+    monkeypatch.setattr(st, "_settings", lambda: _Bad())
+    assert st.load_recent_ranges() == st.DEFAULT_RECENT_RANGES
+
+
+def test_unusable_rows_are_skipped_not_fatal(qtbot, monkeypatch):
+    """One bad row must not discard the good ones."""
+    import json
+
+    from helspin.core import settings as st
+
+    class _Mixed:
+        def value(self, *_a, **_k):
+            return json.dumps([[8.0, 2.0], ["x", 1.0], [3.0, 3.0], [5.0, 1.0]])
+
+        def setValue(self, *_a, **_k):
+            pass
+
+    monkeypatch.setattr(st, "_settings", lambda: _Mixed())
+    # The non-numeric row and the zero-width one are dropped.
+    assert st.load_recent_ranges() == [(8.0, 2.0), (5.0, 1.0)]

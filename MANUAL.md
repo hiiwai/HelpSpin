@@ -1,6 +1,6 @@
 # HelSpin — User Manual
 
-Version 0.5.13
+Version 0.5.14
 
 Compare Bruker NMR spectra and build publication figures.
 
@@ -73,6 +73,12 @@ to compare peak positions and relative intensities directly.
 
 **Stacked** gives each spectrum its own lane, evenly spaced. Use it when the
 traces would otherwise obscure each other, and for showing a progression.
+
+In a stack each spectrum's name sits **beside its own trace**, so a reader
+does not have to match colours to work out which is which. The name is
+anchored to the lane's baseline, so it stays put when you scale or magnify the
+spectrum, and follows the lane when you zoom. Drag a name to reposition it;
+**Reset label positions** puts them back.
 
 ![Stacked](docs/img/stacked.png)
 
@@ -186,8 +192,17 @@ Fit Y, Full, reset or undo clear it.
 The bottom bar takes a typed range. ppm axes descend, so the **left** box is
 the higher value. **Apply** sets it; **Full** clears it.
 
-Recently used ranges are remembered, so returning to an aromatic window across
-several samples is one click.
+Recently used ranges are remembered **between runs**, so returning to a window
+you use often is one click. The list starts seeded with three common windows
+rather than empty:
+
+| Range | Typical use |
+|---|---|
+| -1 to -12 ppm | the negative region |
+| 0 to 10 ppm | a standard ¹H sweep |
+| -2 to 15 ppm | a wide view taking in both |
+
+Ranges you apply are added to the front, so the list becomes yours with use.
 
 Narrowing the window re-fits the vertical frame to the data actually in view —
 otherwise zooming into a quiet region would keep the scale set by peaks

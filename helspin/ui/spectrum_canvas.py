@@ -1737,6 +1737,34 @@ class SpectrumCanvas(QWidget):
     def labels_visible(self) -> bool:
         return self._labels_visible
 
+    def _lane_label_positions(self, drawn):
+        """Axes-fraction position for each stacked lane's name, or None.
+
+        None means "not stacked": in overlay every trace shares one baseline,
+        so there is no per-spectrum height to sit beside and the column at the
+        top-left remains the only sensible arrangement.
+
+        The anchor is the lane baseline converted through the CURRENT y
+        limits, so the names track their traces through a zoom. Deliberately
+        not the trace's data maximum -- that moves when a spectrum is scaled,
+        which is what made labels wander in an earlier version.
+        """
+        if self._arrangement != "stacked":
+            return None
+        low, high = self._axes.get_ylim()
+        span = high - low
+        if not np.isfinite(span) or span <= 0:
+            return None            # degenerate frame: fall back to the column
+        step = self._stack_step or 0.0
+        positions = []
+        for i, (trace, _y) in enumerate(drawn):
+            baseline = trace.y_offset + step * i
+            # A little above the baseline, so the text clears the trace
+            # instead of sitting on top of it.
+            fraction = (baseline - low) / span + 0.045 * self._label_scale
+            positions.append((0.015, min(max(fraction, 0.02), 1.0)))
+        return positions
+
     def _draw_trace_labels(self, drawn, left: float, right: float) -> None:
         """Name each spectrum at a FIXED position, top-left, one per line.
 
@@ -1750,8 +1778,26 @@ class SpectrumCanvas(QWidget):
             return
         line_height = 0.045 * self._label_scale
         self._label_artists = []
+        lanes = self._lane_label_positions(drawn)
         for i, (trace, _y) in enumerate(drawn):
-            if trace.label_pos is None:
+            if lanes is not None:
+                # Stacked: sit each name beside ITS OWN trace rather than in a
+                # column at the top, where the reader has to match colours to
+                # work out which name belongs to which spectrum.
+                #
+                # Recomputed every draw, not cached into label_pos, so the
+                # name follows its lane when the frame changes. It is anchored
+                # to the lane BASELINE, which does not move when a spectrum is
+                # scaled or magnified -- that is what keeps this clear of the
+                # old bug where scaling dragged labels around the plot.
+                base = lanes[i]
+                trace.label_base_pos = base
+                dx, dy = trace.label_offset
+                trace.label_pos = (
+                    min(max(base[0] + dx, 0.0), 0.98),
+                    min(max(base[1] + dy, 0.02), 1.0),
+                )
+            elif trace.label_pos is None:
                 base = (0.015, 0.985 - i * line_height)
                 trace.label_base_pos = base
                 dx, dy = trace.label_offset
