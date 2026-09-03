@@ -89,9 +89,28 @@ def test_recent_ranges_start_with_the_seeded_defaults(qtbot):
     assert bar._recent_combo.count() == len(DEFAULT_RECENT_RANGES)
     shown = [bar._recent_combo.itemText(i)
              for i in range(bar._recent_combo.count())]
-    assert any("-12.00" in t and "-1.00" in t for t in shown)
-    assert any("0.00" in t and "10.00" in t for t in shown)
-    assert any("-2.00" in t and "15.00" in t for t in shown)
+    assert any("0.00" in t and "12.00" in t for t in shown)
+    assert any("-1.00" in t and "13.00" in t for t in shown)
+    assert any("5.00" in t and "13.00" in t for t in shown)
+    # Most-used first: the menu is read top-down.
+    assert "0.00" in shown[0] and "12.00" in shown[0]
+
+
+def test_seeded_ranges_are_usable_windows(qtbot):
+    """Guards the mistake this replaces: the first attempt seeded
+    -1 to -12 ppm, a window entirely below zero, where a 1H spectrum has
+    nothing. A default that has to be deleted before the control is useful is
+    worse than no default."""
+    from helspin.core.settings import DEFAULT_RECENT_RANGES
+
+    for left, right in DEFAULT_RECENT_RANGES:
+        low, high = min(left, right), max(left, right)
+        assert high > low, "a range must have width"
+        # Every default must cover some part of the region where 1H signals
+        # actually appear.
+        assert high > 0.0, f"{low}..{high} lies entirely below 0 ppm"
+        assert high - low >= 5.0, f"{low}..{high} is too narrow to be a default"
+        assert left > right, "stored high-to-low, matching the descending axis"
 
 
 def test_recent_ranges_populate_after_a_valid_edit(qtbot):

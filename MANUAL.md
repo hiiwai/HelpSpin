@@ -1,6 +1,6 @@
 # HelSpin — User Manual
 
-Version 0.5.15
+Version 0.5.17
 
 Compare Bruker NMR spectra and build publication figures.
 
@@ -211,9 +211,9 @@ rather than empty:
 
 | Range | Typical use |
 |---|---|
-| -1 to -12 ppm | the negative region |
-| 0 to 10 ppm | a standard ¹H sweep |
-| -2 to 15 ppm | a wide view taking in both |
+| 0 to 12 ppm | the standard ¹H sweep |
+| -1 to 13 ppm | the same, with a margin at each end |
+| 5 to 13 ppm | downfield only: aromatics, amides |
 
 Ranges you apply are added to the front, so the list becomes yours with use.
 

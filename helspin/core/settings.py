@@ -188,16 +188,20 @@ _RECENT_RANGES_KEY = "plot/recent_ppm_ranges"
 
 # Seeded rather than starting empty. A first run offered an empty "Recent
 # ranges" list, which is a control that does nothing until you have already
-# done by hand the thing it exists to save you doing. These three cover the
-# common windows: the negative region, a standard 1H sweep, and a wide view
-# that takes in both.
+# done by hand the thing it exists to save you doing.
 #
-# Stored high-to-low because the ppm axis descends; the values a user types
-# in either order are normalised the same way on Apply.
+# The three windows a 1H spectrum is actually read in: the standard sweep,
+# the same with a margin either side for peaks that sit just outside it, and
+# the downfield half on its own for aromatics and amides.
+#
+# Ordered most-used first, because that is the order they appear in the menu.
+#
+# Stored high-to-low because the ppm axis descends; values typed in either
+# order are normalised the same way on Apply.
 DEFAULT_RECENT_RANGES: list[tuple[float, float]] = [
-    (-1.0, -12.0),
-    (10.0, 0.0),
-    (15.0, -2.0),
+    (12.0, 0.0),      # standard 1H sweep
+    (13.0, -1.0),     # the same, with a margin at each end
+    (13.0, 5.0),      # downfield only: aromatics, amides
 ]
 
 

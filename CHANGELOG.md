@@ -21,6 +21,39 @@ build can be traced back to a specific entry here.
 > pre-rendering — `0.1.0` (no suffix) is now reserved for when rendering
 > works. `0.0.1` corresponds to what was previously built as `0.1.0.dev1`.
 
+## [0.5.17] — 2026-09-03
+
+### Fixed: the seeded ppm ranges were the wrong windows
+
+The defaults added in 0.5.14 were seeded from a misreading of the request. One
+of them, **-1 to -12 ppm**, is a window lying entirely below zero, where a ¹H
+spectrum has nothing at all — a default that has to be deleted before the
+control becomes useful, which is worse than having no default.
+
+Replaced with the three windows a ¹H spectrum is actually read in, most-used
+first, since that is the order the menu is read in:
+
+| Range | Typical use |
+|---|---|
+| 0 to 12 ppm | the standard ¹H sweep |
+| -1 to 13 ppm | the same, with a margin at each end |
+| 5 to 13 ppm | downfield only: aromatics, amides |
+
+A test now checks the shape of every default rather than only its text: each
+must have real width, must reach above 0 ppm, must span at least 5 ppm, and
+must be stored high-to-low to match the descending axis. A future edit that
+reintroduces a window below zero, or a sliver too narrow to be a starting
+point, fails rather than shipping.
+
+Anyone who already ran 0.5.14 or later has the old values saved in their
+settings; these seeds apply on a first run. Selecting a range you use and
+applying it moves it to the top, and the unwanted ones fall off the end of the
+list of eight with use.
+
+### Tests
+
+947, up from 946.
+
 ## [0.5.16] — 2026-09-03
 
 ### Fixed: spectra could load in the wrong order, with the wrong colours
