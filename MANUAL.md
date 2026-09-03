@@ -1,6 +1,6 @@
 # HelSpin — User Manual
 
-Version 0.5.14
+Version 0.5.15
 
 Compare Bruker NMR spectra and build publication figures.
 
@@ -22,7 +22,20 @@ saved in its own session files.
 
 ---
 
-## 2. Getting started
+## 2. Installing
+
+On macOS, if you have `HelSpin-<version>-<arch>.dmg`: open it, drag HelSpin to
+Applications, and on first launch **right-click the app and choose Open** to
+get past Gatekeeper (once only — the app is not signed with an Apple Developer
+ID). No Python or conda is needed. Check the architecture in the filename:
+`arm64` for Apple Silicon, `x86_64` for Intel; they are not interchangeable.
+
+Otherwise, and on Windows and Linux, see `INSTALL.md`. Linux needs one system
+library (`libxcb-cursor0`) before the first run.
+
+---
+
+## 3. Getting started
 
 ### Adding a data root
 
@@ -64,7 +77,7 @@ actually there.
 
 ---
 
-## 3. Arrangements: overlay and stacked
+## 4. Arrangements: overlay and stacked
 
 **Overlay** draws every spectrum on one set of axes, sharing a baseline. Use it
 to compare peak positions and relative intensities directly.
@@ -87,7 +100,7 @@ because offsets that suit one layout rarely suit the other.
 
 ---
 
-## 4. Adjusting a spectrum
+## 5. Adjusting a spectrum
 
 Select a trace in the right-hand panel first — adjustments apply to the
 selection.
@@ -140,7 +153,7 @@ open always looks the same way.
 
 ---
 
-## 5. Zooming
+## 6. Zooming
 
 Two independent toggles in the bottom bar: **X zoom** and **Y zoom**. They are
 not exclusive — with both on, the wheel zooms both axes at once.
@@ -187,7 +200,7 @@ Fit Y, Full, reset or undo clear it.
 
 ---
 
-## 6. Setting the ppm window
+## 7. Setting the ppm window
 
 The bottom bar takes a typed range. ppm axes descend, so the **left** box is
 the higher value. **Apply** sets it; **Full** clears it.
@@ -211,7 +224,7 @@ kept.
 
 ---
 
-## 7. Undo
+## 8. Undo
 
 **Ctrl+Z** / **Ctrl+Y** (or **Ctrl+Shift+Z**). Forty steps.
 
@@ -224,7 +237,7 @@ Typing into a spin box is one undo step, not one per keystroke.
 
 ---
 
-## 8. Sessions
+## 9. Sessions
 
 **File → Save Session…** writes everything about the current view: which
 datasets are open, and every scale, offset, colour, zoom and window. **File →
@@ -238,7 +251,7 @@ the state that preceded it.
 
 ---
 
-## 9. Exporting a figure
+## 10. Exporting a figure
 
 **Save Image…**. Choose PNG, PDF, or SVG by the extension you type; PDF and
 SVG stay vector and are what you want for a manuscript.
@@ -250,7 +263,7 @@ SVG stay vector and are what you want for a manuscript.
 
 ---
 
-## 10. Where HelSpin keeps its files
+## 11. Where HelSpin keeps its files
 
 | What | macOS / Linux | Windows |
 |---|---|---|
@@ -265,7 +278,7 @@ Deleting the cache is safe; it is rebuilt on the next scan.
 
 ---
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 **A sample is missing from the tree.** Run `helspin --check /path/to/SAMPLE`.
 Note that Bruker writes `acqus`, `pdata` and `1r` in lower case and Linux
@@ -290,7 +303,7 @@ returns to a neutral view without closing anything.
 
 ---
 
-## 12. Known limitations
+## 13. Known limitations
 
 Stated plainly, because finding these out mid-figure is worse.
 
@@ -306,7 +319,7 @@ Stated plainly, because finding these out mid-figure is worse.
 
 ---
 
-## 13. Licence
+## 14. Licence
 
 Free for academic research, teaching and personal use. Commercial use requires
 a licence — enquiries to **iwai@ligsciss.com**. Full terms in `LICENSE`, and

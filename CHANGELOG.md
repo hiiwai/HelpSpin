@@ -21,6 +21,65 @@ build can be traced back to a specific entry here.
 > pre-rendering — `0.1.0` (no suffix) is now reserved for when rendering
 > works. `0.0.1` corresponds to what was previously built as `0.1.0.dev1`.
 
+## [0.5.15] — 2026-09-03
+
+### macOS app bundle and .dmg
+
+`packaging/build_macos.sh` builds `HelSpin.app` and wraps it in
+`HelSpin-<version>-<arch>.dmg`: a disk image a colleague drags to
+Applications, with **no Python, conda or pip needed** on the machine that
+installs it. Interpreter and every library travel inside the bundle.
+
+Added: `packaging/helspin_macos.spec` (PyInstaller, mirroring the Windows
+spec), `helspin/resources/icon.icns` generated from the existing artwork with
+the full size ladder down to 16px, a macOS section in `packaging/BUILD.md`,
+and installation instructions in `INSTALL.md` and the manual.
+
+**This has to be built on a Mac, and it has not been built or tested.**
+PyInstaller freezes the interpreter and shared libraries of the machine it
+runs on, so it does not cross-compile, and `hdiutil` is macOS-only. What is
+shipped here is the tooling; the first real build is yours to run. The script
+refuses to run anywhere but macOS rather than producing something broken, and
+its shell syntax, the spec's Python, the version reader and the icon were all
+verified.
+
+Details that will matter on the day:
+
+- **Ad-hoc signing is not optional.** On Apple Silicon an unsigned binary is
+  killed on launch rather than warned about, so the script signs ad-hoc — that
+  is what makes the app start at all on an M-series Mac. It does **not**
+  satisfy Gatekeeper on someone else's machine: the first launch there needs a
+  right-click → Open, or `xattr -dr com.apple.quarantine`. `BUILD.md` covers
+  proper Developer ID signing and notarisation for when that is worth 99 USD a
+  year.
+- **The build is single-architecture.** An Apple Silicon build will not run on
+  an Intel Mac, or the reverse; PySide6 publishes no universal2 wheels, so a
+  fat binary is not available. The architecture is in the filename so the two
+  cannot be confused.
+- **The script verifies before packaging.** It checks the dependencies are
+  importable, then runs the built binary with `--version` — a bundle missing a
+  library fails there rather than at a user's first double-click.
+- **Info.plist** declares Retina support (without it the whole UI is drawn at
+  1x and upscaled), dark-mode tolerance, a 10.15 floor matching PySide6's
+  wheels, `.helspin` session files as a document type, and the folder and
+  network-volume usage descriptions macOS now requires — without those the
+  consent prompt for a mounted spectrometer share is denied outright rather
+  than shown.
+- **Still one-directory.** A `.app` is a directory, so Qt's libraries stay
+  visible and replaceable in `Contents/Frameworks`. One-file mode would put
+  the distribution out of LGPL compliance and must not be used.
+
+### Manual
+
+A new *Installing* section covering the drag-to-Applications route and the
+Gatekeeper step, with the sections after it renumbered.
+
+### Tests
+
+941, unchanged. The macOS packaging is build tooling; nothing in the
+application changed, and there is no way to exercise a macOS bundle from this
+platform.
+
 ## [0.5.14] — 2026-09-01
 
 ### Spectrum names now sit beside their own spectra

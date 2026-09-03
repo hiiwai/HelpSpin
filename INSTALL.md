@@ -136,6 +136,51 @@ helspin
 
 ---
 
+## macOS: the app bundle (no conda needed)
+
+If someone has built `HelSpin-<version>-<arch>.dmg` (see
+`packaging/BUILD.md`), installing is a drag and nothing else — no Python, no
+conda, no pip.
+
+1. Open the `.dmg`.
+2. Drag **HelSpin** onto the **Applications** shortcut in the same window.
+3. Eject the disk image.
+
+### First launch
+
+macOS will refuse it the first time:
+
+> "HelSpin" cannot be opened because the developer cannot be verified.
+
+That is Gatekeeper, not a fault in the application. HelSpin is not signed with
+an Apple Developer ID, which costs 99 USD a year. To open it:
+
+**Right-click (or Control-click) HelSpin in Applications and choose Open**,
+then confirm. Once only — afterwards it opens normally by double-click.
+
+If that option does not appear, run:
+
+```
+xattr -dr com.apple.quarantine /Applications/HelSpin.app
+```
+
+### Which build you need
+
+The `.dmg` filename carries the architecture:
+
+- **`-arm64`** — Apple Silicon (M1 and later)
+- **`-x86_64`** — Intel Macs
+
+They are not interchangeable. `uname -m` tells you which you are on.
+
+### Running from source instead
+
+The bundle is a convenience, not a replacement. The conda instructions above
+still work and are the better choice if you intend to modify HelSpin, since a
+bundle cannot be edited.
+
+---
+
 ## Linux: one extra step
 
 Everything above works on Linux unchanged, with one addition that has to come
