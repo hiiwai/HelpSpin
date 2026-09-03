@@ -2371,3 +2371,97 @@ def test_a_corrupt_preferences_entry_falls_back_to_defaults(tmp_path, monkeypatc
     recovered = settings_module.load_display_prefs()
     assert "opacity" not in recovered, "a bad value must not reach the canvas"
     assert recovered["cursor_decimals"] == 3, "the good ones still come through"
+
+
+# --- load order ------------------------------------------------------------
+#
+# Found by the first ever run of this suite on macOS: one selection test
+# failed there and nowhere else. Loads run on a thread pool, so they finish in
+# whatever order the filesystem and scheduler produce; appending on arrival
+# ordered the traces by COMPLETION rather than by what the user dropped.
+# Linux happened to finish two trivial loads in order, macOS did not.
+#
+# Not a test artefact. The position decides the colour, so the same four
+# spectra could come out in a different order with different colours each
+# time -- and on a network share, where read times genuinely vary, on any
+# platform.
+
+
+def _deliver(canvas, order, count=3):
+    """Queue `count` datasets, then deliver them in `order`."""
+    import numpy as np
+
+    ppm = np.linspace(10.0, 0.0, 64)
+    intensity = np.ones(64)
+    for i in range(count):
+        canvas._pending_meta[Path(f"/d/{i}")] = {
+            "pulse_program": "", "nucleus": "", "position": i,
+        }
+    for i in order:
+        canvas._on_loaded(f"/d/{i}", ppm, intensity, f"s/{i}")
+
+
+def test_traces_keep_drop_order_when_loads_finish_out_of_order(qtbot):
+    canvas = SpectrumCanvas(reader=FakeReader())
+    qtbot.addWidget(canvas)
+
+    _deliver(canvas, order=(2, 0, 1))
+
+    assert [t.label for t in canvas.traces] == ["s/0", "s/1", "s/2"]
+
+
+def test_reversed_completion_still_gives_drop_order(qtbot):
+    canvas = SpectrumCanvas(reader=FakeReader())
+    qtbot.addWidget(canvas)
+
+    _deliver(canvas, order=(2, 1, 0))
+
+    assert [t.label for t in canvas.traces] == ["s/0", "s/1", "s/2"]
+
+
+def test_colours_do_not_depend_on_completion_order(qtbot):
+    """Colour comes from the drop position, not from how many traces happen
+    to have arrived -- otherwise two spectra that overtake each other are
+    given the same colour."""
+    first = SpectrumCanvas(reader=FakeReader())
+    second = SpectrumCanvas(reader=FakeReader())
+    qtbot.addWidget(first)
+    qtbot.addWidget(second)
+
+    _deliver(first, order=(0, 1, 2))
+    _deliver(second, order=(2, 0, 1))
+
+    assert [t.color for t in first.traces] == [t.color for t in second.traces]
+    assert len({t.color for t in second.traces}) == 3
+
+
+def test_selection_follows_the_trace_that_arrived_first(qtbot):
+    """The first spectrum to ARRIVE becomes the selection, and the index must
+    point at it -- not at the end of the list, which it may no longer be once
+    an earlier drop lands in front of it."""
+    canvas = SpectrumCanvas(reader=FakeReader())
+    qtbot.addWidget(canvas)
+
+    _deliver(canvas, order=(2, 0, 1))
+
+    selected = canvas.selected_trace()
+    assert selected is not None
+    assert canvas.traces[canvas.selected_index()] is selected
+
+
+def test_a_later_drop_still_goes_to_the_end(qtbot):
+    """Ordering must not reorder across separate drops: a spectrum added
+    afterwards belongs after the ones already shown."""
+    canvas = SpectrumCanvas(reader=FakeReader())
+    qtbot.addWidget(canvas)
+
+    _deliver(canvas, order=(1, 0), count=2)
+    assert [t.label for t in canvas.traces] == ["s/0", "s/1"]
+
+    import numpy as np
+    canvas._pending_meta[Path("/d/9")] = {
+        "pulse_program": "", "nucleus": "", "position": 2,
+    }
+    canvas._on_loaded("/d/9", np.linspace(10.0, 0.0, 64), np.ones(64), "s/9")
+
+    assert [t.label for t in canvas.traces] == ["s/0", "s/1", "s/9"]

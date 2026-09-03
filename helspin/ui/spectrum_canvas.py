@@ -108,6 +108,10 @@ class Trace:
     # a peak sits somewhere it does not. Peak readout always reports true,
     # unshifted ppm.
     x_offset: float = 0.0
+    # Where this spectrum was dropped, so a load that finishes
+    # out of order still lands in the right place. See
+    # _insert_trace.
+    load_position: int = -1
     line_width: float = 0.8
     line_style: str = "-"      # matplotlib style: '-', '--', ':', '-.'
     # 2D spectra carry a matrix plus both ppm axes. ppm/intensity stay empty
@@ -1222,8 +1226,22 @@ class SpectrumCanvas(QWidget):
                     f"{'2D' if incoming_2d else '1D'} spectrum."
                 )
                 return
+        # The position this dataset will occupy, decided NOW, at queue time.
+        #
+        # Loads run on a thread pool and finish in whatever order the
+        # filesystem and scheduler produce, so appending on arrival ordered
+        # the traces by completion, not by what the user dropped. Dropping
+        # four spectra could list them in any order -- and because the colour
+        # comes from the position, give them different colours each time. On a
+        # network share, where read times vary, the same drop could come out
+        # differently twice in a row.
+        #
+        # In flight plus already loaded is exactly the index this dataset
+        # would have had if loading were instantaneous.
+        position = len(self._traces) + len(self._inflight)
         self._pending_meta[Path(path)] = {
             "pulse_program": pulse_program, "nucleus": nucleus,
+            "position": position,
         }
         task = _LoadTask(self._reader, path, label, dimensionality)
         task.signals.loaded.connect(self._on_loaded)
@@ -1234,26 +1252,51 @@ class SpectrumCanvas(QWidget):
         self._inflight.add(task)
         self._pool.start(task)
 
+    def _insert_trace(self, trace, position: int) -> int:
+        """Place a freshly loaded trace at the position it was DROPPED in.
+
+        Traces already present carry their own position, so a load that
+        overtakes an earlier one still lands behind it. Returns the index the
+        trace ended up at.
+        """
+        trace.load_position = position
+        index = len(self._traces)
+        for i, existing in enumerate(self._traces):
+            if getattr(existing, "load_position", -1) > position:
+                index = i
+                break
+        self._traces.insert(index, trace)
+        return index
+
+    def _slot_for(self, position: int) -> dict:
+        """Style for a drop position, so colour does not depend on load order.
+
+        Keyed on the position rather than on how many traces happen to have
+        arrived, or two spectra that overtake each other end up sharing a
+        colour.
+        """
+        return self._slot_styles[position % len(self._slot_styles)]
+
     def _on_loaded(self, path, ppm, intensity, label: str,
                    acquisition=None) -> None:
         path = Path(path)
         self._inflight = {t for t in self._inflight if t._path != path}
         if any(t.path == path for t in self._traces):
             return
-        slot = self._slot_styles[len(self._traces) % len(self._slot_styles)]
-        self._traces.append(
-            Trace(
-                path=path, label=label, ppm=ppm, intensity=intensity,
-                color=slot["color"], line_width=slot["width"],
-                line_style=slot["style"],
-            )
-        )
         meta = self._pending_meta.pop(path, {})
-        self._traces[-1].pulse_program = meta.get("pulse_program", "")
-        self._traces[-1].nucleus = meta.get("nucleus", "")
+        position = meta.get("position", len(self._traces))
+        slot = self._slot_for(position)
+        trace = Trace(
+            path=path, label=label, ppm=ppm, intensity=intensity,
+            color=slot["color"], line_width=slot["width"],
+            line_style=slot["style"],
+        )
+        index = self._insert_trace(trace, position)
+        trace.pulse_program = meta.get("pulse_program", "")
+        trace.nucleus = meta.get("nucleus", "")
         if acquisition:
-            self._traces[-1].ns = int(acquisition[0] or 0)
-            self._traces[-1].rg = float(acquisition[1] or 0.0)
+            trace.ns = int(acquisition[0] or 0)
+            trace.rg = float(acquisition[1] or 0.0)
         self._y_limits = None   # new trace -> recompute the frame
         self._stack_step = None
         # Autoscale on every drop. Pinning the y range at the FIRST drop
@@ -1267,7 +1310,7 @@ class SpectrumCanvas(QWidget):
         # First spectrum dropped becomes the selection, so the wheel and
         # y-scale controls work immediately without an extra click.
         if self._selected_index is None:
-            self._selected_index = len(self._traces) - 1
+            self._selected_index = index
         self._redraw()
         self._emit_mode_if_changed()
         self.spectrumAdded.emit(label)
@@ -1278,25 +1321,25 @@ class SpectrumCanvas(QWidget):
         self._inflight = {t for t in self._inflight if t._path != path}
         if any(t.path == path for t in self._traces):
             return
-        slot = self._slot_styles[len(self._traces) % len(self._slot_styles)]
-        self._traces.append(
-            Trace(
-                path=path, label=label,
-                ppm=np.asarray([]), intensity=np.asarray([]),
-                color=slot["color"], line_width=slot["width"],
-                line_style=slot["style"],
-                is_2d=True,
-                matrix=payload["matrix"],
-                ppm_f1=payload["ppm_f1"],
-                ppm_f2=payload["ppm_f2"],
-            )
-        )
         meta = self._pending_meta.pop(path, {})
-        self._traces[-1].pulse_program = meta.get("pulse_program", "")
-        self._traces[-1].nucleus = meta.get("nucleus", "")
+        position = meta.get("position", len(self._traces))
+        slot = self._slot_for(position)
+        trace = Trace(
+            path=path, label=label,
+            ppm=np.asarray([]), intensity=np.asarray([]),
+            color=slot["color"], line_width=slot["width"],
+            line_style=slot["style"],
+            is_2d=True,
+            matrix=payload["matrix"],
+            ppm_f1=payload["ppm_f1"],
+            ppm_f2=payload["ppm_f2"],
+        )
+        index = self._insert_trace(trace, position)
+        trace.pulse_program = meta.get("pulse_program", "")
+        trace.nucleus = meta.get("nucleus", "")
         self._y_limits = None
         if self._selected_index is None:
-            self._selected_index = len(self._traces) - 1
+            self._selected_index = index
         self._redraw()
         self._emit_mode_if_changed()
         self.spectrumAdded.emit(label)

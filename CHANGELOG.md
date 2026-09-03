@@ -21,6 +21,54 @@ build can be traced back to a specific entry here.
 > pre-rendering — `0.1.0` (no suffix) is now reserved for when rendering
 > works. `0.0.1` corresponds to what was previously built as `0.1.0.dev1`.
 
+## [0.5.16] — 2026-09-03
+
+### Fixed: spectra could load in the wrong order, with the wrong colours
+
+Found by the **first ever run of the test suite on macOS**. One test failed
+there and had never failed on Linux: `select_trace(1)` set the index to 1, but
+the trace at index 1 was the one dropped *first*.
+
+Not a test artefact. Loads run on a `QThreadPool` and were appended on
+arrival, so the list was ordered by **completion**, not by what the user
+dropped. Two trivial loads happened to finish in order on Linux; macOS
+scheduled them differently and they did not.
+
+The consequences were worse than a shuffled list. The slot style is chosen by
+position, so **colour depended on completion order too**: drop four spectra
+and they could come out in a different order, in different colours, each time.
+On a network share — where read times genuinely vary with file size and
+caching — this could happen on any platform, and would be near-impossible to
+diagnose from the symptom, which is simply "the colours changed".
+
+Each dataset now records the position it was dropped at, when it is *queued*,
+and lands there however the loads finish. A load that overtakes an earlier one
+still ends up behind it. Colour is keyed on that position rather than on how
+many traces have arrived, so two spectra overtaking each other can no longer
+be given the same colour. Selection follows the trace that arrived first
+rather than the end of the list, which it may no longer be once an earlier
+drop lands in front of it.
+
+Five tests cover it: out-of-order completion, fully reversed completion,
+colours matching between in-order and out-of-order canvases, the selection
+index pointing at the trace it names, and a later drop still going to the end
+rather than being reordered into an earlier batch.
+
+### Note on macOS performance
+
+`helspin --version` took 7.5 s of wall clock for 0.9 s of CPU with the
+repository on OneDrive, and 18 s on another run. PySide6 reads the source of
+every module it imports, and OneDrive's on-demand hydration turns each of
+those reads into a possible network round trip. Moving the working copy off
+cloud-synced storage removes it.
+
+Worth doing before any PyInstaller build: it reads every file in the tree, and
+a sync stall mid-build can bundle a partially hydrated file.
+
+### Tests
+
+946, up from 941.
+
 ## [0.5.15] — 2026-09-03
 
 ### macOS app bundle and .dmg

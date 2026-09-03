@@ -374,6 +374,24 @@ Kept for a possible future "precise layout" mode. Do not assume they run.
 
 ---
 
+### 4.q  Trace order comes from the DROP, never from load completion
+
+Loads run on a thread pool. Appending in `_on_loaded` ordered traces by
+whichever finished first, which is scheduler- and filesystem-dependent: the
+bug survived every Linux run and failed on the first macOS one.
+
+`add_dataset` records `position = len(self._traces) + len(self._inflight)` at
+QUEUE time; `_insert_trace` puts the trace there on arrival. Do not replace
+this with an append.
+
+`_slot_for(position)` keys colour on the same number. Do not go back to
+`len(self._traces)` -- two spectra overtaking each other then share a colour,
+and the same drop yields different colours on different runs. On a network
+share this reproduces on any platform.
+
+Selection uses the returned insert index, not `len(self._traces) - 1`: the
+newest trace is not necessarily last once an earlier drop lands in front.
+
 ### 4.r  Stacked mode magnifies; it does NOT zoom the window
 
 In stacked mode the layout IS a set of lanes at fixed baselines. Narrowing the
