@@ -328,3 +328,111 @@ readable in the application at **Help → Licence**.
 Qt (via PySide6) is LGPLv3 and is packaged one-directory so its shared
 libraries stay replaceable. nmrglue, NumPy and SciPy are BSD; matplotlib is
 BSD-style.
+
+---
+
+## CEST mode
+
+Toolbar **CEST…**, or File → CEST…. Opens its own window. If exactly one
+experiment is selected in the browser it is loaded straight away.
+
+The panel handles both Waudby-lab pseudo-2D experiments and picks the tab
+from PULPROG: `19f_calib_nut` opens the calibration tab, `19f_cest` the
+Z-spectrum tab.
+
+### Which data it reads
+
+**Raw `ser` by default.** `xf2` stores SI(F1) rows, and TopSpin defaults SI
+to a power of two — so a 42-offset series processed at SI(F1) = 32 silently
+loses ten offsets. The resulting `2rr` is a valid file with no record of the
+loss. The panel treats the frequency list as the authority on how many rows
+should exist, and says so in the notes box when pdata disagrees.
+
+Set **Source** to *Processed 2rr* if you want the phasing you set in
+TopSpin; the panel will still warn if rows are missing. SI(F1) larger than
+TD(F1) is fine — the surplus rows are blank padding and are trimmed.
+
+To keep TopSpin's own view complete, set `1 SI` to the next power of two
+above your offset count (64 for 42 offsets) before `xf2`, and accept the
+blank trailing rows.
+
+### Calibration tab
+
+Choose a peak centre and half-width, then **Fit nutation**. The window is
+applied identically to every row and the result stays signed, because the
+sign inversion across rows is the measurement.
+
+- **Measurement** — integration is the default and the right choice here.
+  A narrow window works best: on 19F test data, residuals fell from 7.0% at
+  ±0.20 ppm to 3.9% at ±0.03 ppm.
+- **Model** — *Automatic* compares a plain sine against a damped one on
+  AICc and reports which won and by how much.
+- **Target field** — the field you want. It need not match this
+  calibration's CNST8.
+
+Results end with a **TO SET ON THE SPECTROMETER** table giving the `CNST`
+value to type for each true field, with the pulse length and power the
+sequence will derive from it. Lowering `CNST` is the whole adjustment, and
+in `19f_cest` it is the only one available — that sequence recomputes
+`plw25` unconditionally, so anything typed into `PLW25` is overwritten when
+the pulse program compiles. Record the true field in the title, since acqus
+will show the lowered `CNST` rather than the field you applied.
+
+Results also give the fitted B1 with an error bar, T2 effective, residuals,
+and two power figures kept deliberately apart: the **correction factor**
+`(nominal/fitted)²`, which multiplies any nominal power on the same probe
+and tuning and so transfers to a CEST experiment at a different field; and
+the absolute power for your target field, which also changes the field and
+therefore does not transfer. **Export record…** writes a record sheet
+matching Part 8 of the 19F CEST manual.
+
+### Z-spectrum tab
+
+Saturation offsets are read from the experiment's own `lists/f1/` copy of
+the FQ1LIST. Bare Hz, ppm (`P`), absolute MHz (`SFO`) and `BF` lists are all
+understood, as are comments and Windows line endings. Without a list the
+panel says so rather than plotting against row number. A series with fewer
+rows than offsets is plotted against the offsets it has, with the missing
+range named; more rows than offsets is refused, since the extras cannot be
+matched to anything.
+
+- **Measurement** — peak height is the default and usually correct. On 19F
+  test data, repeated reference offsets scattered by 0.007 using height
+  against 0.090 using the integral: a saturated peak leaves a drifting
+  baseline that an integral accumulates without bound, far enough to drive
+  I/I₀ negative.
+- **Reference from** — offsets at least this far out are averaged to give
+  I₀. *Automatic* picks the remote ones. Two or more give a scatter figure,
+  which is a direct measure of the noise on every other point — include a
+  couple of remote offsets in your list for this reason.
+- **Fit deepest dip** — a Lorentzian on the points near the dip, reporting
+  its centre in Hz and ppm from the carrier. A dip sitting on the carrier is
+  flagged as likely direct saturation rather than exchange. Every other
+  minimum clearing the sigma threshold is listed with its significance.
+- **Error bars from spectrum noise** — one sigma per point, anchored to the
+  spread of the repeated I0 references. A shaded band marks ±1 sigma.
+- **Subtract fitted dip** — removes the fitted profile so direct-saturation
+  wings stop hiding a smaller dip beside them. For locating a feature, not
+  for quantifying it.
+- **X range / Y range / Full range** — the direct-saturation dip runs to
+  near zero, so the baseline where a bound-state dip would sit is
+  compressed. Zooming Y to roughly 0.95–1.02 is usually what makes one
+  visible.
+
+### Hunting a bound-state dip
+
+1. Zoom Y to about 0.95–1.02 so the baseline fills the plot.
+2. Tick **Subtract fitted dip** to flatten the direct-saturation wings.
+3. Read the candidate list. Three sigma is worth following up, five is
+   convincing.
+4. Confirm it: a real exchange feature persists in a repeat, moves
+   predictably with saturation field, and is absent from a partner-free
+   control. Direct saturation sits on the carrier; a bound state does not.
+
+If nothing clears the threshold, the limit is noise rather than the tool.
+More scans, longer `D18`, or higher concentration lower the sigma figure,
+and the candidate list will follow.
+
+This locates dips; it does not measure exchange. Turning a centre and depth
+into kex and a populated fraction needs Bloch-McConnell fitting against
+several saturation fields, which is not attempted.

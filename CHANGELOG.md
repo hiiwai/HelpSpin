@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.6.2 - 2026-09-04
+
+### Finding a second dip
+
+The Z-spectrum tab now reports every local minimum that clears a
+significance threshold, stated in sigma rather than absolute depth:
+
+    Noise (1 sigma) 0.0021 in I/I0
+
+    OTHER CANDIDATE DIPS (2)
+       offset        depth   significance
+          +900 Hz   0.0290     4.0 sigma   (+1.594 ppm)
+          -400 Hz   0.0246     3.4 sigma   (-0.708 ppm)
+
+Absolute depth means different things on different samples: with 42 offsets
+the scatter was 0.0072 and a 0.007 dip was noise; with 64 it was 0.0021 and
+the same dip is a 3-sigma feature.
+
+**Subtract fitted dip** removes the fitted direct-saturation profile so its
+wings stop hiding smaller features nearby. A display aid for LOCATING a dip,
+not a quantitative correction -- it assumes the two features simply add,
+which Bloch-McConnell would not.
+
+### Error bars
+
+Per-point one-sigma errors, measured from the signal-free part of each row's
+own spectrum and propagated through the I0 division, with a shaded +/-1
+sigma band behind the trace.
+
+Two things were needed to make the numbers honest. Taking a MAD over the
+whole non-peak region read 2.8x the true scatter, because a 19F spectrum
+holds resonances besides the one being measured; the estimate now takes the
+quietest chunk instead. And the absolute scale is anchored to the spread of
+the repeated I0 references, which is the same measurement made more than
+once and so needs no modelling -- relative differences between rows are
+kept, so a genuinely noisier row still shows a longer bar.
+
+### Zoom
+
+X and Y range boxes on the Z-spectrum plus a **Full range** button. The X
+axis stays inverted when zoomed; `set_xlim` silently undoes the inversion if
+given its pair the other way round, which would mirror the spectrum. An
+inverted or empty range is ignored rather than blanking the plot, since it
+is a normal intermediate state while typing.
+
+### Fixed
+
+**The CEST section of MANUAL.md, which 0.6.1 removed by accident.** It was
+written into the release checkout rather than the working tree, so the next
+build reverted it. Restored, with the 0.6.1 and 0.6.2 additions folded in.
+
+The release bundle now carries a `HEAD` ref, so `git clone` of it works.
+0.6.0 and 0.6.1 were built with `main --tags` only and failed with
+"remote HEAD refers to nonexistent ref"; the documented `git fetch` route
+was unaffected.
+
+1045 tests (up from 1032).
+
+
 ## 0.6.1 - 2026-09-04
 
 ### Truncated Z-spectra now plot instead of being refused

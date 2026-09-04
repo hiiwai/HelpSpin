@@ -45,11 +45,14 @@ from ..domain.cest import (
     CestError,
     choose_nutation_model,
     corrected_power,
+    dip_candidates,
     find_peak_ppm,
     measure_rows,
     normalise_z,
     power_ratio_db,
-    seed_dips,
+    remove_dip,
+    row_noise,
+    window_indices,
 )
 from ..infrastructure.cest_reader import (
     classify,
@@ -246,6 +249,44 @@ class CestPanel(QWidget):
         self._z_ppm.setChecked(True)
         self._z_dips = QCheckBox("Fit deepest dip (Lorentzian)")
         self._z_dips.setChecked(True)
+        self._z_errors = QCheckBox("Error bars from spectrum noise")
+        self._z_errors.setChecked(True)
+        self._z_errors.setToolTip(
+            "One sigma per point, measured from the signal-free part of that\n"
+            "row's own spectrum and propagated through the I0 division."
+        )
+        self._z_residual = QCheckBox("Subtract fitted dip (reveal second dip)")
+        self._z_residual.setToolTip(
+            "Direct saturation is far deeper than any exchange feature and\n"
+            "its wings hide small dips nearby. Removing the fitted profile\n"
+            "flattens them. A display aid for LOCATING a dip, not a\n"
+            "quantitative correction."
+        )
+        self._z_sigma = QDoubleSpinBox()
+        self._z_sigma.setRange(1.0, 20.0)
+        self._z_sigma.setDecimals(1)
+        self._z_sigma.setSingleStep(0.5)
+        self._z_sigma.setValue(3.0)
+        self._z_sigma.setPrefix("report dips above ")
+        self._z_sigma.setSuffix(" sigma")
+        self._z_ymin = QDoubleSpinBox()
+        self._z_ymin.setRange(-10.0, 10.0)
+        self._z_ymin.setDecimals(3)
+        self._z_ymin.setSingleStep(0.01)
+        self._z_ymax = QDoubleSpinBox()
+        self._z_ymax.setRange(-10.0, 10.0)
+        self._z_ymax.setDecimals(3)
+        self._z_ymax.setSingleStep(0.01)
+        self._z_xmin = QDoubleSpinBox()
+        self._z_xmin.setRange(-1e6, 1e6)
+        self._z_xmin.setDecimals(1)
+        self._z_xmax = QDoubleSpinBox()
+        self._z_xmax.setRange(-1e6, 1e6)
+        self._z_xmax.setDecimals(1)
+        for box in (self._z_xmin, self._z_xmax, self._z_ymin, self._z_ymax):
+            box.valueChanged.connect(self._apply_z_limits)
+        self._z_full = QPushButton("Full range")
+        self._z_full.clicked.connect(self._reset_z_limits)
 
         form = QFormLayout()
         form.addRow("Peak centre", self._z_centre)
@@ -253,7 +294,19 @@ class CestPanel(QWidget):
         form.addRow("Measurement", self._z_mode)
         form.addRow("Reference from", self._z_ref)
         form.addRow("", self._z_ppm)
+        form.addRow("", self._z_errors)
         form.addRow("", self._z_dips)
+        form.addRow("", self._z_residual)
+        form.addRow("", self._z_sigma)
+        zoom_x = QHBoxLayout()
+        zoom_x.addWidget(self._z_xmin)
+        zoom_x.addWidget(self._z_xmax)
+        form.addRow("X range", zoom_x)
+        zoom_y = QHBoxLayout()
+        zoom_y.addWidget(self._z_ymin)
+        zoom_y.addWidget(self._z_ymax)
+        form.addRow("Y range", zoom_y)
+        form.addRow("", self._z_full)
 
         build_button = QPushButton("Build Z-spectrum")
         build_button.clicked.connect(self._build_z)
@@ -579,14 +632,26 @@ class CestPanel(QWidget):
                 f"of them."
             )
         try:
-            intensity = measure_rows(
-                rows, data.ppm, self._z_centre.value(), self._z_half.value(),
-                mode=self._z_mode.currentData(),
-            )
+            centre, half = self._z_centre.value(), self._z_half.value()
+            mode = self._z_mode.currentData()
+            intensity = measure_rows(rows, data.ppm, centre, half, mode=mode)
+            errors = None
+            if self._z_errors.isChecked():
+                with contextlib.suppress(CestError):
+                    exclude = max(4.0 * half, half + 0.05)
+                    sigma = row_noise(rows, data.ppm, centre, exclude)
+                    if mode == "integral":
+                        # An integral of n points accumulates n independent
+                        # noise samples, so its error grows as sqrt(n) --
+                        # using the per-point sigma unchanged would understate
+                        # it by an order of magnitude on a wide window.
+                        lo, hi = window_indices(data.ppm, centre, half)
+                        sigma = sigma * math.sqrt(max(hi - lo, 1))
+                    errors = sigma
             threshold = self._z_ref.value() or None
             z = normalise_z(
                 intensity, offsets, sfo1_mhz=data.sfo1_mhz,
-                reference_min_hz=threshold,
+                reference_min_hz=threshold, intensity_error=errors,
             )
         except CestError as exc:
             self._z_result.setPlainText(f"Could not build the Z-spectrum: {exc}")
@@ -628,16 +693,21 @@ class CestPanel(QWidget):
                 "in the measurement window \u2014 try Peak height."
             )
 
+        sigma = z.noise
+        if math.isfinite(sigma):
+            lines.append(f"Noise (1 sigma) {sigma:.4f} in I/I0")
+
         fitted = None
+        display = z
         if self._z_dips.isChecked():
-            floor = 3.0 * z.i0_scatter if math.isfinite(z.i0_scatter) else 0.05
-            seeds = seed_dips(z, min_depth=max(floor, 0.02))
-            if not seeds:
-                lines += ["", f"No dip deeper than {max(floor, 0.02):.3f} "
-                              "below baseline (3x the reference scatter)."]
+            floor = self._z_sigma.value()
+            candidates = dip_candidates(z, min_sigma=floor)
+            if not candidates:
+                lines += ["", f"No dip reaching {floor:.1f} sigma "
+                              f"({floor * sigma:.4f} in I/I0)."]
             else:
                 try:
-                    fitted = fit_dip(z, seeds[0][0])
+                    fitted = fit_dip(z, candidates[0][0])
                     lines += [
                         "",
                         f"Dip centre      {fitted.centre_hz:+.1f} "
@@ -653,15 +723,45 @@ class CestPanel(QWidget):
                             "likely DIRECT saturation of the observed "
                             "resonance rather than exchange."
                         )
-                    if len(seeds) > 1:
-                        lines.append(
-                            f"  {len(seeds) - 1} shallower candidate dip(s) "
-                            "not fitted."
-                        )
                 except CestError as exc:
                     lines += ["", f"Dip fit failed: {exc}"]
+
+            # Everything else that clears the threshold, with its
+            # significance, so a candidate can be judged rather than guessed
+            # at. This is the list to look at when hunting a bound state.
+            others = [c for c in candidates
+                      if fitted is None
+                      or abs(c[0] - fitted.centre_hz) > max(fitted.width_hz, 1.0)]
+            if others:
+                lines += ["", f"OTHER CANDIDATE DIPS ({len(others)})",
+                          "   offset        depth   significance"]
+                for offset_hz, depth, significance in others[:8]:
+                    lines.append(
+                        f"  {offset_hz:+8.0f} Hz  {depth:7.4f}   "
+                        f"{significance:5.1f} sigma"
+                        f"   ({offset_hz / z.sfo1_mhz:+.3f} ppm)"
+                    )
+                if fitted is not None:
+                    lines.append(
+                        "  Tick 'Subtract fitted dip' to flatten the direct-"
+                        "saturation wings under these."
+                    )
+            elif fitted is not None:
+                lines += ["", "No other candidate above the threshold. Lower "
+                              "the sigma setting, or improve the noise with "
+                              "more scans, to look deeper."]
+
+        if self._z_residual.isChecked() and fitted is not None:
+            display = remove_dip(z, fitted.baseline, fitted.depth,
+                                 fitted.centre_hz, fitted.width_hz)
+            lines += ["", "SHOWING RESIDUAL after removing the fitted dip. "
+                          "Depths here are relative to the flattened "
+                          "baseline; the fitted dip itself is gone by "
+                          "construction."]
+
         self._z_result.setPlainText("\n".join(lines))
-        self._draw_z(z, fitted)
+        self._draw_z(display, None if display is not z else fitted)
+        self._seed_z_limits(display)
 
     def _draw_z(self, z, fitted) -> None:
         from ..domain.cest import lorentzian_dip
@@ -672,8 +772,17 @@ class CestPanel(QWidget):
         use_ppm = self._z_ppm.isChecked()
         x = z.offsets_ppm if use_ppm else z.offsets_hz
         interior = ~z.reference_mask
-        axes.plot(x[interior], z.intensity[interior], "o-", ms=4, lw=1.0,
-                  color="#1b6ca8", label="I/I$_0$")
+        errors = z.error
+
+        if errors is not None and np.any(np.isfinite(errors)):
+            axes.errorbar(
+                x[interior], z.intensity[interior],
+                yerr=errors[interior], fmt="o-", ms=4, lw=1.0, elinewidth=0.9,
+                capsize=2, color="#1b6ca8", ecolor="#1b6ca8", label="I/I$_0$",
+            )
+        else:
+            axes.plot(x[interior], z.intensity[interior], "o-", ms=4, lw=1.0,
+                      color="#1b6ca8", label="I/I$_0$")
         if z.reference_mask.any():
             axes.plot(x[z.reference_mask], z.intensity[z.reference_mask], "s",
                       ms=6, color="#e0a458", label="I$_0$ reference")
@@ -684,6 +793,13 @@ class CestPanel(QWidget):
             axes.plot(dense, lorentzian_dip(dense, fitted.baseline, fitted.depth,
                                             centre, width),
                       "-", color="#d1495b", lw=1.4, label="Lorentzian dip")
+        # A one-sigma band makes a marginal dip readable at a glance: a point
+        # dipping below it is worth a second look, one inside it is not.
+        sigma = z.noise
+        if math.isfinite(sigma) and sigma > 0:
+            baseline = float(np.median(z.intensity[interior]))
+            axes.axhspan(baseline - sigma, baseline + sigma,
+                         color="#999", alpha=0.15, lw=0, label="\u00b11 sigma")
         axes.axhline(1.0, color="k", lw=0.5, ls=":")
         axes.axvline(0.0, color="k", lw=0.5, ls=":")
         # NMR convention: frequency increases to the LEFT.
@@ -694,7 +810,53 @@ class CestPanel(QWidget):
         )
         axes.set_ylabel("I / I$_0$")
         axes.legend(loc="lower right", frameon=False, fontsize=8)
+        self._z_axes_ready = True
+        self._apply_z_limits()
         plot.draw_idle()
+
+    def _seed_z_limits(self, z) -> None:
+        """Fill the range boxes from the data without triggering a redraw loop.
+
+        Seeded rather than left at zero because a range control whose default
+        is meaningless has to be discovered before it can be used. Signals are
+        blocked while setting: each setValue would otherwise fire
+        valueChanged, and four of those would redraw the plot four times.
+        """
+        x = z.offsets_ppm if self._z_ppm.isChecked() else z.offsets_hz
+        y = z.intensity
+        pad_y = 0.05 * (float(np.ptp(y)) or 1.0)
+        for box, value in (
+            (self._z_xmin, float(np.min(x))), (self._z_xmax, float(np.max(x))),
+            (self._z_ymin, float(np.min(y)) - pad_y),
+            (self._z_ymax, float(np.max(y)) + pad_y),
+        ):
+            blocked = box.blockSignals(True)
+            box.setValue(value)
+            box.blockSignals(blocked)
+
+    def _apply_z_limits(self) -> None:
+        """Apply the range boxes, ignoring an empty or inverted range."""
+        if not getattr(self, "_z_axes_ready", False):
+            return
+        axes = self._z_plot.axes
+        lo_x, hi_x = self._z_xmin.value(), self._z_xmax.value()
+        if hi_x > lo_x:
+            # The axis is inverted for NMR convention, so high ppm goes on
+            # the left; set_xlim must be given the pair in that order or the
+            # inversion is silently undone.
+            axes.set_xlim(hi_x, lo_x)
+        lo_y, hi_y = self._z_ymin.value(), self._z_ymax.value()
+        if hi_y > lo_y:
+            axes.set_ylim(lo_y, hi_y)
+        self._z_plot.draw_idle()
+
+    def _reset_z_limits(self) -> None:
+        """Back to the full data range."""
+        if self._z is None:
+            return
+        display = self._z
+        self._seed_z_limits(display)
+        self._apply_z_limits()
 
     # --------------------------------------------------------------- export
 

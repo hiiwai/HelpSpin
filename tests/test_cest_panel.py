@@ -260,3 +260,79 @@ def test_record_sheet_carries_the_cnst_settings(panel, tmp_path):
     record = panel.nutation_record()
     assert "Probe delivers" in record
     assert "SET CNST" in record
+
+
+def test_zoom_boxes_are_seeded_and_applied(panel, tmp_path):
+    """A range control whose default is meaningless has to be discovered."""
+    root = make_dataset(tmp_path / "zoom", n_rows=N, si_f1=N, offsets=DEFAULT_OFFSETS)
+    panel.load(root)
+    panel._build_z()
+    assert panel._z_xmax.value() > panel._z_xmin.value()
+    assert panel._z_ymax.value() > panel._z_ymin.value()
+
+    panel._z_ymin.setValue(0.90)
+    panel._z_ymax.setValue(1.05)
+    assert panel._z_plot.axes.get_ylim() == pytest.approx((0.90, 1.05))
+
+    panel._reset_z_limits()
+    assert panel._z_plot.axes.get_ylim()[0] < 0.90
+
+
+def test_x_axis_stays_inverted_when_zoomed(panel, tmp_path):
+    """NMR convention: frequency increases leftwards.
+
+    set_xlim silently undoes the inversion if given the pair the other way
+    round, which would mirror the spectrum on any zoom.
+    """
+    root = make_dataset(tmp_path / "inv", n_rows=N, si_f1=N, offsets=DEFAULT_OFFSETS)
+    panel.load(root)
+    panel._build_z()
+    panel._z_xmin.setValue(-500.0)
+    panel._z_xmax.setValue(500.0)
+    low, high = panel._z_plot.axes.get_xlim()
+    assert low > high
+
+
+def test_inverted_range_is_ignored(panel, tmp_path):
+    """Setting max below min must leave the axis alone, not blank the plot.
+
+    Boxes are edited one at a time, so an inverted pair is a normal
+    intermediate state while the user types -- it has to be survivable.
+    """
+    root = make_dataset(tmp_path / "bad", n_rows=N, si_f1=N, offsets=DEFAULT_OFFSETS)
+    panel.load(root)
+    panel._build_z()
+    before = panel._z_plot.axes.get_ylim()
+    panel._z_ymax.setValue(panel._z_ymin.value() - 1.0)     # inverted
+    assert panel._z_plot.axes.get_ylim() == pytest.approx(before)
+
+
+def test_error_bars_can_be_switched_off(panel, tmp_path):
+    root = make_dataset(tmp_path / "err", n_rows=N, si_f1=N, offsets=DEFAULT_OFFSETS)
+    panel.load(root)
+    panel._z_errors.setChecked(True)
+    panel._build_z()
+    with_errors = panel._z.error
+    panel._z_errors.setChecked(False)
+    panel._build_z()
+    assert with_errors is not None
+    assert panel._z.error is None
+
+
+def test_candidate_dips_are_listed_with_significance(panel, tmp_path):
+    root = make_dataset(tmp_path / "cand", n_rows=N, si_f1=N, offsets=DEFAULT_OFFSETS)
+    panel.load(root)
+    panel._build_z()
+    text = panel._z_result.toPlainText()
+    assert "Noise (1 sigma)" in text
+
+
+def test_residual_view_announces_itself(panel, tmp_path):
+    """Depths in the residual view are not comparable to the raw ones."""
+    root = make_dataset(tmp_path / "res", n_rows=N, si_f1=N, offsets=DEFAULT_OFFSETS)
+    panel.load(root)
+    panel._z_residual.setChecked(True)
+    panel._build_z()
+    text = panel._z_result.toPlainText()
+    if "Dip centre" in text:
+        assert "SHOWING RESIDUAL" in text

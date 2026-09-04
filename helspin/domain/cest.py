@@ -382,6 +382,30 @@ class ZSpectrum:
     i0: float
     i0_scatter: float               # sd of the references, in I/I0 units
     sfo1_mhz: float
+    error: np.ndarray | None = None  # 1 sigma on each I/I0 point
+
+    @property
+    def noise(self) -> float:
+        """One representative sigma, for thresholding candidate dips.
+
+        Prefers the spread of the repeated reference offsets: they are the
+        same measurement made more than once, so their scatter includes every
+        source of run-to-run variation, not just thermal noise in one row.
+        Falls back to the median propagated error, then to a visible-scatter
+        estimate from the off-resonance points.
+        """
+        if math.isfinite(self.i0_scatter) and self.i0_scatter > 0:
+            return float(self.i0_scatter)
+        if self.error is not None and np.any(np.isfinite(self.error)):
+            return float(np.median(self.error[np.isfinite(self.error)]))
+        interior = self.intensity[~self.reference_mask]
+        if interior.size > 3:
+            # Median absolute deviation of successive differences: robust to
+            # the dip itself, which is signal rather than scatter.
+            diffs = np.diff(interior)
+            mad = float(np.median(np.abs(diffs - np.median(diffs))))
+            return 1.4826 * mad / math.sqrt(2.0)
+        return float("nan")
 
     @property
     def offsets_ppm(self) -> np.ndarray:
@@ -394,6 +418,7 @@ def normalise_z(
     *,
     sfo1_mhz: float,
     reference_min_hz: float | None = None,
+    intensity_error: np.ndarray | None = None,
 ) -> ZSpectrum:
     """Divide by I0 taken from the most remote saturation offsets.
 
@@ -442,6 +467,43 @@ def normalise_z(
     scatter = (
         float(np.std(references / i0, ddof=1)) if references.size > 1 else float("nan")
     )
+    # I0 is an average of n references, so its own error shrinks as
+    # 1/sqrt(n). Both terms matter: dividing by an uncertain I0 tilts the
+    # whole spectrum, which a per-row error alone would not show.
+    error = None
+    if intensity_error is not None:
+        intensity_error = np.asarray(intensity_error, dtype=np.float64)
+        if intensity_error.shape != intensities.shape:
+            raise CestError(
+                f"{intensity_error.size} errors for {intensities.size} points"
+            )
+        n_ref = max(int(mask.sum()), 1)
+        i0_error = float(np.sqrt(np.sum(intensity_error[mask] ** 2))) / n_ref
+        ratio = intensities / i0
+        error = np.sqrt(
+            (intensity_error / i0) ** 2 + (ratio * i0_error / i0) ** 2
+        )
+        # Anchor the ABSOLUTE scale to the repeated references when there are
+        # enough of them, keeping the RELATIVE differences between rows.
+        #
+        # A per-row estimate read off the spectrum is a good relative weight
+        # -- it correctly says which rows are noisier -- but its absolute
+        # level is unreliable, because a 19F spectrum holds resonances other
+        # than the one being measured and because the error on a peak MAXIMUM
+        # is not the error on a single point. Measured on real data it came
+        # out 2.8x the true run-to-run scatter. The references are the same
+        # measurement repeated under identical conditions, so their spread is
+        # the one figure here that needs no modelling; rescaling to it is the
+        # usual practice of matching quoted errors to observed variance.
+        finite = np.isfinite(error) & (error > 0)
+        if (
+            int(mask.sum()) > 2
+            and math.isfinite(scatter)
+            and scatter > 0
+            and finite.any()
+        ):
+            error = error * (scatter / float(np.median(error[finite])))
+
     order = np.argsort(offsets_hz)
     return ZSpectrum(
         offsets_hz=offsets_hz[order],
@@ -450,6 +512,7 @@ def normalise_z(
         i0=i0,
         i0_scatter=scatter,
         sfo1_mhz=sfo1_mhz,
+        error=None if error is None else error[order],
     )
 
 
@@ -459,6 +522,64 @@ def lorentzian_dip(x, baseline: float, depth: float, centre: float, width: float
         raise CestError("dip width must be positive")
     reduced = 2.0 * (np.asarray(x, float) - centre) / width
     return baseline - depth / (1.0 + reduced ** 2)
+
+
+def dip_candidates(
+    z: ZSpectrum, *, min_sigma: float = 3.0, exclude_reference: bool = True
+) -> list[tuple[float, float, float]]:
+    """Local minima as (offset_hz, depth, significance), deepest first.
+
+    Significance is depth divided by the noise on a point, so the threshold
+    is stated in the units that matter -- "three times the scatter" rather
+    than an absolute depth that means different things on different samples.
+    On 19F data with 64 offsets the reference scatter was 0.0021, so a dip of
+    0.007 is already a 3-sigma feature; with 42 offsets it was 0.0072 and the
+    same dip would not have been believable.
+    """
+    sigma = z.noise
+    if not math.isfinite(sigma) or sigma <= 0:
+        sigma = 0.01
+    mask = ~z.reference_mask if exclude_reference else np.ones_like(
+        z.reference_mask, dtype=bool
+    )
+    x = z.offsets_hz[mask]
+    y = z.intensity[mask]
+    if y.size < 3:
+        return []
+    baseline = float(np.median(y))
+    found: list[tuple[float, float, float]] = []
+    for i in range(1, y.size - 1):
+        if y[i] < y[i - 1] and y[i] < y[i + 1]:
+            depth = baseline - float(y[i])
+            if depth <= 0:
+                continue
+            significance = depth / sigma
+            if significance >= min_sigma:
+                found.append((float(x[i]), depth, significance))
+    found.sort(key=lambda item: item[1], reverse=True)
+    return found
+
+
+def remove_dip(z: ZSpectrum, baseline: float, depth: float,
+               centre_hz: float, width_hz: float) -> ZSpectrum:
+    """The Z-spectrum with one fitted Lorentzian divided out of the way.
+
+    Direct saturation of the observed resonance is usually an order of
+    magnitude deeper than any exchange feature, and its wings extend far
+    enough to hide a small dip a few hundred Hz away. Subtracting the fitted
+    profile flattens those wings so a secondary dip stands clear of them.
+
+    This is a display aid for LOCATING a second dip, not a quantitative
+    correction: the subtraction assumes the two features simply add, which a
+    proper Bloch-McConnell treatment would not.
+    """
+    model = lorentzian_dip(z.offsets_hz, baseline, depth, centre_hz, width_hz)
+    residual = z.intensity - model + baseline
+    return ZSpectrum(
+        offsets_hz=z.offsets_hz, intensity=residual,
+        reference_mask=z.reference_mask, i0=z.i0, i0_scatter=z.i0_scatter,
+        sfo1_mhz=z.sfo1_mhz, error=z.error,
+    )
 
 
 def seed_dips(
@@ -565,6 +686,55 @@ def measure_rows(
     if mode == "fixed":
         return rows[:, (lo + hi) // 2]
     raise CestError(f"unknown measurement mode {mode!r}")
+
+
+def row_noise(
+    rows: np.ndarray, ppm: np.ndarray, centre_ppm: float, exclude_ppm: float
+) -> np.ndarray:
+    """One-sigma noise per row, from the spectrum away from the peak.
+
+    This is the honest per-point error for a Z-spectrum: each row is an
+    independent acquisition, so its own baseline noise sets how well its
+    intensity is known. The reference scatter is a good aggregate figure but
+    gives one number for the whole series, which cannot show that a row with
+    fewer effective scans, or one sitting on a spoiled baseline, is less
+    certain than its neighbours.
+
+    Uses a median absolute deviation rather than a standard deviation so a
+    residual peak, a spike or a baseline roll inside the sampled region
+    inflates the estimate far less than it would otherwise.
+
+    MAD alone is not enough, though. Taking it over the whole non-peak
+    spectrum measured 0.0227 on real 19F data against a true run-to-run
+    scatter of 0.0072 -- three times too large, because a 19F spectrum
+    routinely holds other resonances and MAD only tolerates a small minority
+    of outliers. So the region is cut into chunks and the SMALLEST chunk MAD
+    is taken: the quietest stretch of baseline is the one with no signal in
+    it, which is what a noise figure is supposed to describe.
+    """
+    rows = np.atleast_2d(np.asarray(rows, dtype=np.float64))
+    ppm = np.asarray(ppm, dtype=np.float64)
+    if rows.shape[1] != ppm.size:
+        raise CestError("rows and ppm axis must be the same length")
+    if exclude_ppm <= 0:
+        raise CestError("exclusion width must be positive")
+    keep = np.abs(ppm - centre_ppm) > exclude_ppm
+    if keep.sum() < 16:
+        raise CestError("too little signal-free spectrum to estimate noise")
+    segment = rows[:, keep]
+
+    n_chunks = max(1, min(16, segment.shape[1] // 64))
+    if n_chunks == 1:
+        median = np.median(segment, axis=1, keepdims=True)
+        return 1.4826 * np.median(np.abs(segment - median), axis=1)
+
+    width = segment.shape[1] // n_chunks
+    per_chunk = np.empty((rows.shape[0], n_chunks), dtype=np.float64)
+    for index in range(n_chunks):
+        chunk = segment[:, index * width:(index + 1) * width]
+        median = np.median(chunk, axis=1, keepdims=True)
+        per_chunk[:, index] = 1.4826 * np.median(np.abs(chunk - median), axis=1)
+    return per_chunk.min(axis=1)
 
 
 def find_peak_ppm(row: np.ndarray, ppm: np.ndarray) -> float:

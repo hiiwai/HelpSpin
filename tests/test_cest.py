@@ -417,3 +417,95 @@ def test_pulse_programme_classification(pulprog, expected):
     from the `.cw` originals.
     """
     assert classify(pulprog) == expected
+
+
+# ------------------------------------------------- errors, noise, candidates
+
+def test_row_noise_ignores_other_resonances():
+    """MAD over the whole non-peak region is fooled by a second peak.
+
+    On real 19F data that read 2.8x the true scatter, because a spectrum
+    routinely holds resonances besides the one being measured. Taking the
+    quietest chunk is what makes the figure a noise estimate.
+    """
+    rng = np.random.default_rng(0)
+    ppm = np.linspace(0.0, -20.0, 4096)
+    rows = rng.normal(0.0, 1.0, size=(3, ppm.size))
+    # A big interfering peak occupying a third of the spectrum.
+    rows += 500.0 * np.exp(-((ppm + 15.0) ** 2) / (2 * 1.5 ** 2))[None, :]
+    from helspin.domain.cest import row_noise
+
+    sigma = row_noise(rows, ppm, centre_ppm=-5.0, exclude_ppm=1.0)
+    assert sigma == pytest.approx(1.0, rel=0.35)
+
+
+def test_row_noise_rejects_impossible_arguments():
+    from helspin.domain.cest import row_noise
+
+    ppm = np.linspace(0.0, -10.0, 512)
+    rows = np.zeros((2, 512))
+    with pytest.raises(CestError):
+        row_noise(rows, ppm[:-1], -5.0, 1.0)
+    with pytest.raises(CestError):
+        row_noise(rows, ppm, -5.0, 0.0)
+    with pytest.raises(CestError):
+        row_noise(rows, ppm, -5.0, 100.0)      # excludes everything
+
+
+def test_errors_are_anchored_to_the_reference_scatter():
+    """Quoted errors must match observed run-to-run variance."""
+    offsets, intensity = _fake_z(noise=0.5)
+    raw = np.full(offsets.shape, 5.0)          # deliberately wrong scale
+    raw[3] *= 3.0                              # one genuinely noisier row
+    z = normalise_z(intensity, offsets, sfo1_mhz=564.62, intensity_error=raw)
+    assert z.error is not None
+    assert float(np.median(z.error)) == pytest.approx(z.i0_scatter, rel=1e-6)
+    # Relative weighting survives the rescale.
+    assert z.error.max() > 2.5 * float(np.median(z.error))
+
+
+def test_error_length_must_match():
+    offsets, intensity = _fake_z()
+    with pytest.raises(CestError):
+        normalise_z(intensity, offsets, sfo1_mhz=564.62,
+                    intensity_error=np.ones(3))
+
+
+def test_noise_falls_back_when_there_is_no_reference_scatter():
+    """One reference gives no scatter, but a noise figure is still needed."""
+    offsets = np.array([-9000.0, -200.0, -100.0, 0.0, 100.0, 200.0])
+    intensity = np.array([10.0, 9.9, 9.8, 2.0, 9.9, 10.1])
+    z = normalise_z(intensity, offsets, sfo1_mhz=564.62, reference_min_hz=5000.0)
+    assert math.isnan(z.i0_scatter)
+    assert math.isfinite(z.noise) and z.noise > 0
+
+
+def test_candidates_are_reported_in_sigma_not_absolute_depth():
+    from helspin.domain.cest import dip_candidates
+
+    offsets, intensity = _fake_z(centre=300.0, noise=0.2)
+    z = normalise_z(intensity, offsets, sfo1_mhz=564.62)
+    loose = dip_candidates(z, min_sigma=1.0)
+    strict = dip_candidates(z, min_sigma=50.0)
+    assert len(loose) >= len(strict)
+    for _, _, significance in loose:
+        assert significance >= 1.0
+
+
+def test_removing_a_dip_flattens_it_and_leaves_the_rest():
+    """The point of the residual view: a second dip must survive it."""
+    from helspin.domain.cest import dip_candidates, remove_dip
+
+    offsets = np.array([-8000.0] + list(np.arange(-1500.0, 1501.0, 25.0)) + [8000.0])
+    big = 0.9 / (1.0 + (2.0 * offsets / 200.0) ** 2)
+    small = 0.05 / (1.0 + (2.0 * (offsets - 700.0) / 100.0) ** 2)
+    z = normalise_z(100.0 * (1.0 - big - small), offsets, sfo1_mhz=564.62)
+    fitted = fit_dip(z, 0.0)
+    flat = remove_dip(z, fitted.baseline, fitted.depth,
+                      fitted.centre_hz, fitted.width_hz)
+    # The big dip is gone...
+    near_zero = np.abs(flat.offsets_hz) < 60.0
+    assert flat.intensity[near_zero].min() > 0.5
+    # ...and the small one is still there, and now findable.
+    found = [c[0] for c in dip_candidates(flat, min_sigma=2.0)]
+    assert any(abs(offset - 700.0) < 120.0 for offset in found)
