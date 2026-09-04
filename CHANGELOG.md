@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.6.0 - 2026-09-04
+
+### CEST mode
+
+A dedicated CEST panel (toolbar `CEST…`, or File → CEST…) covering both
+Waudby-lab pseudo-2D experiments: `19f_calib_nut` nutation calibration and
+`19f_cest` Z-spectra. It opens as its own window because both experiments
+reduce a pseudo-2D series to one number per row, plotted against pulse
+duration or saturation offset -- quantities the shared ppm canvas cannot
+express.
+
+**Calibration tab.** Signed peak integration over a fixed window applied
+identically to every row, fitted to `C + A*sin(2*pi*B1*t + phi)` or its
+damped form, with the model chosen on AICc. Reports the fitted B1 with an
+error bar, T2 effective, residuals, and the corrected power.
+
+**Z-spectrum tab.** Peak height (default), integral or fixed-point
+measurement against saturation offsets read from the experiment's own
+FQ1LIST, normalised to I0 from the remote reference offsets, with optional
+Lorentzian dip fitting. Exports CSV; the calibration tab exports a record
+sheet matching Part 8 of the 19F CEST manual.
+
+### Three findings from real 19F data that shaped the implementation
+
+**Processed data can silently lose offsets.** `xf2` stores SI(F1) rows and
+TopSpin defaults SI to a power of two, so a 42-offset series processed at
+SI(F1) = 32 loses ten rows -- on the test dataset, the entire +1.95 to
++3.19 ppm wing plus both high-frequency I0 references. The 2rr is a valid
+32-row file with no record of the loss. CEST mode therefore treats the
+FQ1LIST as the authority on row count, reads raw `ser` by default, and says
+so when pdata disagrees. SI(F1) > TD(F1) is the healthy case and is trimmed,
+not rejected: the surplus rows are blank padding, and a retained all-zero row
+would plot as spurious total saturation.
+
+**A sine fit with a free frequency is multimodal.** `curve_fit` seeded
+naively reached 100.0, 105.3 or 112.9 Hz on the SAME series depending only
+on the initial T2, at residuals from 4% to 35% -- the reported field was an
+artefact of the starting guess. Fits now run a global separable
+least-squares search first: holding B1 and T2 fixed makes the model linear
+in the remaining parameters, so those are solved exactly at every grid point
+and only the genuinely non-linear ones are scanned. `curve_fit` then
+polishes from the global optimum and is rejected if it worsens the residual.
+
+**Peak height and integration each win one experiment.** For a nutation,
+integration averages noise over a peak whose sign is the measurement, and
+narrowing the window from +/-0.20 to +/-0.03 ppm cut residuals from 7.0% to
+3.9%. For a Z-spectrum, repeated reference offsets scattered by 0.007 using
+height against 0.090 using the integral, because a saturated peak leaves a
+drifting baseline an integral accumulates without bound -- badly enough to
+drive I/I0 negative. Each tab defaults to what its own data supports.
+
+### Other notes
+
+- The calibration correction factor `(nominal/fitted)^2` is reported
+  separately from any change of target field. Only the former transfers, so
+  a nutation acquired at CNST8 = 100 Hz corrects a CEST experiment run at
+  CNST25 = 60 Hz without re-calibrating; reporting only the product invites
+  applying it to a power already computed for the target field.
+- Reproducing TopSpin's own 2rr from `ser` requires reversing before
+  phasing, negating PHC1 and adding 180 degrees to PHC0. Verified at
+  correlation +0.9957 against the shipped processed data; the sign-flipped
+  variant reaches -0.9957, which is the right curve inverted and would turn
+  a Z-spectrum upside down while looking plausible.
+- Row `i` of a nutation uses `p9 + (i-1)*inp9`, not `i*inp9`. They coincide
+  only because the pulse program sets `p9 == inp9`; under `-DMANUAL` they
+  need not, and reading both from acqus keeps a manual acquisition correct.
+- Pulse programs are classified on substrings, since sites rename them --
+  the test data ships `19f_calib_nut.iw` and `19f_cest.iw`.
+
+80 new tests (1027 total).
+
+
 All notable changes to HelSpin are recorded here. Versions follow
 [Semantic Versioning](https://semver.org/). The project is pre-1.0: spectra
 render, overlay and stack, and export to publication figures, but the tool is

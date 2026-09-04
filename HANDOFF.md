@@ -620,3 +620,35 @@ QT_QPA_PLATFORM=offscreen .venv/bin/pytest     # must be green
    the values, so it is a proxy-level change.
 6. **Cancel an in-flight drop.** A 2D load of a large matrix is still
    uninterruptible once started.
+
+## CEST mode (0.6.0)
+
+Four things here will bite anyone who touches this code.
+
+**Never fit a nutation with curve_fit alone.** A sine with a free frequency
+is multimodal. On the 19F test series, initial T2 guesses of 0.01/0.03 s
+gave 100.0 and 105.3 Hz at 30-35% residuals while 0.02/0.05/0.10/0.30 s all
+gave 112.9 Hz at 4.3%. `domain.cest.search_nutation` finds the global
+optimum by separable least squares -- B1 and T2 are scanned, C/Ac/As solved
+exactly by lstsq -- and `services.cest_fit.polish_nutation` only refines it,
+returning the seed untouched if the polish worsens the residual. Do not
+"simplify" this back to a seeded curve_fit.
+
+**Never trust the row count in pdata.** `xf2` stores SI(F1) rows. A real
+42-offset CEST series processed at SI(F1)=32 lost ten offsets including both
+high-frequency I0 references, and the resulting 2rr is a perfectly valid file
+that says nothing about it. The FQ1LIST is the authority. SI > TD is fine
+(blank padding, trimmed); SI < TD means data is gone, so read `ser`.
+
+**Never take a magnitude.** The sign inversion across nutation rows IS the
+measurement. Magnitude mode, per-row autophasing, or a per-row window all
+rectify the curve and fit at twice the true field.
+
+**The phase convention for ser was measured, not derived.** rev before ps,
+p1 negated, p0 + 180. Correlation +0.9957 against TopSpin's own 2rr. The
+variant without the 180 gives -0.9957 -- the correct curve inverted, which
+would silently flip a Z-spectrum. If that check ever needs redoing, compare
+against a pdata whose row count matches TD.
+
+Also: report the calibration correction `(nominal/fitted)^2` separately from
+any target-field change. Only the former transfers between experiments.

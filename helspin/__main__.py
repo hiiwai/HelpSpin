@@ -295,6 +295,13 @@ class MainWindow(QMainWindow):
         clear_action.setFont(clear_font)
         clear_action.setToolTip("Remove all spectra and reset the canvas")
         toolbar.addSeparator()
+        self._cest_action = toolbar.addAction("CEST\u2026", self._show_cest)
+        self._cest_action.setToolTip(
+            "Nutation B1 calibration and 19F CEST Z-spectra.\n"
+            "Opens its own window: both reduce a pseudo-2D series to one\n"
+            "number per row, which the ppm canvas cannot express."
+        )
+        toolbar.addSeparator()
         toolbar.addAction("Preferences\u2026", self._preferences)
         toolbar.addSeparator()
         toolbar.addAction("About", self._about)
@@ -327,6 +334,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction("&Refresh All", self._browser.refresh_all).setShortcut("F5")
         file_menu.addAction("&Clear Canvas", self._clear_canvas)
         file_menu.addSeparator()
+        file_menu.addAction("&CEST…", self._show_cest)
         file_menu.addAction("&Preferences…", self._preferences)
         file_menu.addSeparator()
         file_menu.addAction("&Quit", self.close)
@@ -354,6 +362,53 @@ class MainWindow(QMainWindow):
         help_menu.addAction("&About", self._about)
 
     # -- actions -------------------------------------------------------------
+
+    def _show_cest(self) -> None:
+        """Open the CEST panel, reusing the existing one if it is already up.
+
+        Held on the window rather than created per click: a second panel
+        would be a second copy of the same experiment with its own
+        independent fit, and closing the first would leave the second
+        orphaned. Reusing also preserves whatever the user had loaded.
+
+        If exactly one expno is selected in the browser it is loaded
+        straight away, which is the common case -- otherwise the panel opens
+        empty with its own file chooser.
+        """
+        from .ui.cest_panel import CestPanel
+
+        panel = getattr(self, "_cest_panel", None)
+        if panel is None:
+            panel = CestPanel()
+            self._cest_panel = panel
+        selected = self._selected_expnos()
+        if len(selected) == 1:
+            panel.load(selected[0])
+        panel.show()
+        panel.raise_()
+        panel.activateWindow()
+
+    def _selected_expnos(self) -> list:
+        """Expno paths currently selected in the browser, if any.
+
+        Defensive: the browser's selection API is not part of this feature's
+        contract, so a change there must not break opening the panel.
+        """
+        from pathlib import Path as _Path
+
+        found = []
+        try:
+            for index in self._browser.selected_source_indexes():
+                node = index.internalPointer()
+                path = getattr(node, "path", None)
+                if path is None:
+                    continue
+                candidate = _Path(path)
+                if (candidate / "acqus").is_file():
+                    found.append(candidate)
+        except Exception:
+            return []
+        return found
 
     def _add_data_root(self) -> None:
         directory = QFileDialog.getExistingDirectory(
