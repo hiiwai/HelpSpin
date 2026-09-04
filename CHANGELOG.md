@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.6.1 - 2026-09-04
+
+### Truncated Z-spectra now plot instead of being refused
+
+`F1QF(calclist(F19sat, 1))` steps the frequency list in order, so row *i* is
+offset *i*. A series that lost its tail is therefore still correctly labelled
+for every row it has, and refusing it outright discarded usable data. The
+panel now plots what exists and names what is missing:
+
+    PARTIAL: 32 of 42 offsets. Missing +1100 to +9000 Hz (10 offsets).
+
+The opposite direction is still refused. More rows than offsets means there
+is no way to know which offset the extras belong to, so any pairing would be
+invented rather than merely incomplete. A single row is refused too.
+
+Also warns when every surviving I0 reference lies on one side of the
+carrier, since I0 then carries any baseline tilt across the whole spectrum.
+
+### Calibration reports the CNST to set on the spectrometer
+
+The fit said how wrong the field was but not what to do about it. It now
+prints the values to type:
+
+    TO SET ON THE SPECTROMETER
+      true field    set CNST    -> pulse         -> PLW
+         30.0 Hz       26.66   9375.8 us    1.55818e-05 W
+         60.0 Hz       53.33   4687.9 us    6.23273e-05 W  <-- target
+        100.0 Hz       88.88   2812.8 us    0.000173131 W
+
+Lowering CNST is the whole adjustment, and in `19f_cest` it is the only one
+available: that sequence computes `plw25 = plw1*pow(p1/p25,2)` with no
+`#ifndef MANUAL` guard, so anything typed into PLW25 is overwritten when the
+pulse program compiles. (`19f_calib_nut` does guard its `plw8`, so that one
+can also be set by hand under `-DMANUAL`.) The quoted PLW is computed with
+the same relation the pulse program uses, so it can be checked in `eda`.
+
+The record sheet carries the settings too, and the output now reminds you to
+record the true field in the title -- acqus will show the lowered CNST, not
+the field actually applied.
+
+1032 tests (up from 1027).
+
+
 ## 0.6.0 - 2026-09-04
 
 ### CEST mode

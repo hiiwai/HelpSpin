@@ -101,14 +101,48 @@ def test_missing_offsets_explains_itself(panel, tmp_path):
     assert "No saturation offsets" in panel._z_result.toPlainText()
 
 
-def test_row_offset_mismatch_is_refused_with_advice(panel, tmp_path):
+def test_truncated_series_still_plots_the_offsets_it_has(panel, tmp_path):
+    """F1QF steps the list in order, so row i IS offset i.
+
+    A truncated series is therefore still correctly labelled for the rows it
+    has; only the tail is absent. Plotting what exists beats refusing,
+    provided the loss is stated.
+    """
     root = make_dataset(tmp_path / "mm", n_rows=N, si_f1=16, offsets=DEFAULT_OFFSETS)
     _set_source(panel, "2rr")
     panel.load(root)
     panel._build_z()
     text = panel._z_result.toPlainText()
-    assert "mismatch" in text.lower()
+    assert text.startswith("PARTIAL:")
+    assert "16 of 24" in text
     assert "Raw ser" in text
+    # 16 rows plotted against the FIRST 16 offsets, in order.
+    rows = panel.z_csv().splitlines()[1:]
+    assert len(rows) == 16
+    plotted = sorted(float(line.split(",")[0]) for line in rows)
+    assert plotted == sorted(float(v) for v in DEFAULT_OFFSETS[:16])
+
+
+def test_more_rows_than_offsets_is_still_refused(panel, tmp_path):
+    """The recoverable direction is one way only.
+
+    Extra rows have no offset to belong to, so any pairing would be invented.
+    """
+    root = make_dataset(tmp_path / "extra", n_rows=N, si_f1=N,
+                        offsets=DEFAULT_OFFSETS[:5])
+    panel.load(root)
+    panel._build_z()
+    text = panel._z_result.toPlainText()
+    assert "no way to know" in text
+    assert not text.startswith("PARTIAL")
+
+
+def test_a_single_row_cannot_make_a_z_spectrum(panel, tmp_path):
+    root = make_dataset(tmp_path / "one", n_rows=N, si_f1=1, offsets=DEFAULT_OFFSETS)
+    _set_source(panel, "2rr")
+    panel.load(root)
+    panel._build_z()
+    assert "at least two" in panel._z_result.toPlainText()
 
 
 def test_nutation_fit_reports_a_field_and_a_power(panel, tmp_path):
@@ -137,11 +171,9 @@ def test_target_field_changes_the_corrected_power(panel, tmp_path):
         panel._n_target.setValue(target)
         panel._fit_nutation()
         for line in panel._n_result.toPlainText().splitlines():
-            if line.startswith("For a ") and "PLW8 becomes" in line:
-                return float(line.split()[-2])
-            if line.startswith("PLW8 corrected"):
-                fallback = float(line.split()[2])
-        return fallback
+            if "<-- target" in line:
+                return float(line.split()[5])
+        raise AssertionError("no target row in the settings table")
 
     assert corrected_for(50.0) == pytest.approx(corrected_for(100.0) / 4.0, rel=1e-3)
 
@@ -164,3 +196,67 @@ def test_loading_a_bad_directory_does_not_raise(panel, tmp_path, monkeypatch):
     )
     panel.load(tmp_path / "does-not-exist")
     assert "Could not load" in panel._notes.toPlainText()
+
+
+def test_result_gives_the_cnst_to_type_on_the_spectrometer(panel, tmp_path):
+    """The panel must answer "what do I set?", not just "how wrong is it?".
+
+    Both pulse programs derive pulse and power from a CNST, and 19f_cest
+    recomputes plw25 unconditionally, so lowering CNST is the only
+    adjustment available there.
+    """
+    root = make_dataset(tmp_path / "cn", n_rows=16, si_f1=16,
+                        pulprog="19f_calib_nut.iw", offsets=None)
+    panel.load(root)
+    panel._n_half.setValue(0.5)
+    panel._n_target.setValue(60.0)
+    panel._fit_nutation()
+    text = panel._n_result.toPlainText()
+    assert "TO SET ON THE SPECTROMETER" in text
+    assert "Calibration re-check: set CNST8" in text
+    assert "CEST: set CNST25" in text
+
+    ratio = None
+    for line in text.splitlines():
+        if line.startswith("Nominal (CNST)"):
+            ratio = float(line.split("ratio")[1])
+    assert ratio is not None
+
+    # The quoted CNST must be the nominal divided by the measured excess.
+    for line in text.splitlines():
+        if "CEST: set CNST25" in line:
+            quoted = float(line.split("=")[1].split()[0])
+    assert quoted == pytest.approx(60.0 / ratio, rel=1e-3)
+
+
+def test_quoted_power_matches_what_the_pulse_program_would_derive(panel, tmp_path):
+    """The table's PLW must equal plw1*(p1/pulse)^2, not an independent guess."""
+    from helspin.ui.cest_panel import plw1_for
+
+    root = make_dataset(tmp_path / "pw", n_rows=16, si_f1=16,
+                        pulprog="19f_calib_nut.iw", offsets=None)
+    panel.load(root)
+    panel._n_half.setValue(0.5)
+    panel._n_target.setValue(60.0)
+    panel._fit_nutation()
+    for line in panel._n_result.toPlainText().splitlines():
+        if line.strip().startswith("60.0 Hz"):
+            parts = line.split()
+            cnst, pulse, plw = float(parts[2]), float(parts[3]), float(parts[5])
+            assert pulse == pytest.approx(1e6 / (4 * cnst), rel=1e-3)
+            # p1 = 12 us, plw1 = 9.5121 W in the fixture.
+            assert plw == pytest.approx(plw1_for(12.0, 9.5121, pulse), rel=1e-3)
+            break
+    else:
+        raise AssertionError("no 60 Hz row in the table")
+
+
+def test_record_sheet_carries_the_cnst_settings(panel, tmp_path):
+    root = make_dataset(tmp_path / "rec", n_rows=16, si_f1=16,
+                        pulprog="19f_calib_nut.iw", offsets=None)
+    panel.load(root)
+    panel._n_half.setValue(0.5)
+    panel._fit_nutation()
+    record = panel.nutation_record()
+    assert "Probe delivers" in record
+    assert "SET CNST" in record

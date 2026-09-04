@@ -420,11 +420,9 @@ class CestPanel(QWidget):
             "",
         ]
 
-        plw_array = data.acqus.get("PLW", [])
-        try:
-            plw8 = float(plw_array[8])
-        except (IndexError, TypeError, ValueError):
-            plw8 = 0.0
+        plw8 = _get_float(data.acqus, "PLW", 8)
+        plw1 = _get_float(data.acqus, "PLW", 1)
+        p1 = _get_float(data.acqus, "P", 1)
         if plw8 > 0 and nominal > 0:
             try:
                 # Two DIFFERENT factors, kept apart on purpose. The
@@ -437,6 +435,7 @@ class CestPanel(QWidget):
                 # power that was already computed for the target field.
                 correction = (nominal / fit.field_hz) ** 2
                 at_nominal = corrected_power(plw8, nominal, fit.field_hz)
+                ratio = fit.field_hz / nominal
                 lines += [
                     f"PLW8 as set     {plw8:.6g} W  (nominal {nominal:.1f} Hz)",
                     f"PLW8 corrected  {at_nominal:.6g} W  for a true "
@@ -445,28 +444,41 @@ class CestPanel(QWidget):
                     "",
                     f"CORRECTION FACTOR  {correction:.4f}"
                     f"   = ({nominal:.1f}/{fit.field_hz:.2f})^2",
+                    f"The probe delivers {ratio:.4f}x the nominal field. "
                     "Multiply any NOMINAL power on this probe and tuning by "
-                    "this factor. It transfers to a CEST experiment run at a "
-                    "different field, because it corrects the calibration "
-                    "rather than the field.",
+                    "the factor above; it transfers to a CEST experiment run "
+                    "at a different field, because it corrects the "
+                    "calibration rather than the field.",
                 ]
-                plw25 = _get_float(data.acqus, "PLW", 25)
-                cnst25 = _get_float(data.acqus, "CNST", 25)
-                if plw25 > 0:
+                # The spectrometer-ready numbers. Both sequences derive their
+                # pulse and power from a CNST, so asking for a LOWER nominal
+                # field is the whole adjustment -- and in 19f_cest it is the
+                # only one available, because that sequence recomputes plw25
+                # unconditionally and overwrites anything typed into it.
+                lines += ["", "TO SET ON THE SPECTROMETER", ""]
+                lines.append(
+                    f"  {'true field':>10}   {'set CNST':>9}   "
+                    f"{'-> pulse':>10}   {'-> PLW':>12}"
+                )
+                wanted = sorted({nominal, target, 30.0, 60.0, 100.0})
+                for true_hz in wanted:
+                    cnst = true_hz / ratio
+                    pulse_us = 1e6 / (4.0 * cnst)
+                    marker = "  <-- target" if abs(true_hz - target) < 1e-9 else ""
                     lines.append(
-                        f"  e.g. PLW25 {plw25:.6g} W"
-                        + (f" (nominal {cnst25:.0f} Hz)" if cnst25 else "")
-                        + f"  ->  {plw25 * correction:.6g} W"
+                        f"  {true_hz:>7.1f} Hz   {cnst:>9.2f}   "
+                        f"{pulse_us:>7.1f} us   {plw1_for(p1, plw1, pulse_us):>12.6g} W"
+                        f"{marker}"
                     )
-                if abs(target - nominal) > 1e-9:
-                    retuned = corrected_power(plw8, target, fit.field_hz)
-                    lines += [
-                        "",
-                        f"For a {target:.1f} Hz field instead, PLW8 becomes "
-                        f"{retuned:.6g} W",
-                        "  (that also changes the field, so it is not the "
-                        "transferable factor above).",
-                    ]
+                lines += [
+                    "",
+                    f"  Calibration re-check: set CNST8 = {nominal / ratio:.2f} "
+                    f"and refit; B1 should come back near {nominal:.1f} Hz.",
+                    f"  CEST: set CNST25 = {target / ratio:.2f} for a true "
+                    f"{target:.1f} Hz saturation field.",
+                    "  Record the TRUE field in the title -- acqus will show "
+                    "the lowered CNST, not the field you actually applied.",
+                ]
             except CestError as exc:
                 lines.append(f"Power correction unavailable: {exc}")
         else:
@@ -534,15 +546,38 @@ class CestPanel(QWidget):
         data = self._data
         offsets = self._offsets
         rows = data.rows
+        partial_note = None
         if rows.shape[0] != offsets.size:
-            # Never pad or truncate silently: pairing the wrong intensity with
-            # the wrong offset produces a plausible, wrong Z-spectrum.
-            self._z_result.setPlainText(
-                f"Row/offset mismatch: {rows.shape[0]} rows but "
-                f"{offsets.size} offsets in the frequency list.\n\n"
-                "Switch Source to 'Raw ser', which always holds every row."
+            if rows.shape[0] > offsets.size:
+                # More rows than offsets: nothing says which offset each
+                # extra row belongs to, so any pairing would be invented.
+                self._z_result.setPlainText(
+                    f"{rows.shape[0]} rows but only {offsets.size} offsets in "
+                    f"the frequency list.\n\n"
+                    "There is no way to know which offset the extra rows were "
+                    "acquired at, so they cannot be plotted. Check that "
+                    f"{'the list is the one this experiment used'}."
+                )
+                return
+            if rows.shape[0] < 2:
+                self._z_result.setPlainText(
+                    f"Only {rows.shape[0]} row available; a Z-spectrum needs "
+                    "at least two.\n\n"
+                    "Switch Source to 'Raw ser', which always holds every row."
+                )
+                return
+            # Fewer rows than offsets is recoverable. F1QF steps the list in
+            # order, so row i IS offset i -- the pairing stays correct and
+            # only the tail is absent. Plotting the rows that exist is more
+            # useful than refusing, provided the loss is stated plainly.
+            lost = offsets[rows.shape[0]:]
+            offsets = offsets[:rows.shape[0]]
+            partial_note = (
+                f"PARTIAL: {rows.shape[0]} of {self._offsets.size} offsets. "
+                f"Missing {lost.min():+.0f} to {lost.max():+.0f} Hz "
+                f"({lost.size} offsets). Switch Source to 'Raw ser' for all "
+                f"of them."
             )
-            return
         try:
             intensity = measure_rows(
                 rows, data.ppm, self._z_centre.value(), self._z_half.value(),
@@ -559,7 +594,10 @@ class CestPanel(QWidget):
 
         self._z = z
         n_ref = int(z.reference_mask.sum())
-        lines = [
+        lines = []
+        if partial_note:
+            lines += [partial_note, ""]
+        lines += [
             f"Offsets         {z.offsets_hz.size}"
             f"   ({z.offsets_hz.min():+.0f} to {z.offsets_hz.max():+.0f} Hz)",
             f"I0              {z.i0:.4g}   from {n_ref} reference offset"
@@ -574,6 +612,14 @@ class CestPanel(QWidget):
             lines.append(
                 "Reference sd    unavailable (one reference offset only; "
                 "two or more give a direct noise estimate)"
+            )
+        if n_ref > 1 and (
+            np.all(z.offsets_hz[z.reference_mask] > 0)
+            or np.all(z.offsets_hz[z.reference_mask] < 0)
+        ):
+            lines.append(
+                "  All references lie on ONE side of the carrier, so I0 "
+                "carries any baseline tilt across the spectrum."
             )
         lines.append(f"Lowest I/I0     {z.intensity.min():.3f}")
         if z.intensity.min() < -0.05:
@@ -683,12 +729,19 @@ class CestPanel(QWidget):
             ("Target field", f"{target:.2f} Hz"),
         ]
         if plw8 > 0 and nominal > 0:
+            ratio = fit.field_hz / nominal
+            rows += [
+                ("Probe delivers", f"{ratio:.4f} x nominal"),
+                ("Correction factor", f"{(nominal / fit.field_hz) ** 2:.4f}"),
+                ("SET CNST for a true "
+                 f"{nominal:.0f} Hz", f"{nominal / ratio:.2f}"),
+                ("SET CNST for a true "
+                 f"{target:.0f} Hz", f"{target / ratio:.2f}"),
+            ]
             with contextlib.suppress(CestError):
                 rows += [
                     ("PLW8 corrected to nominal",
                      f"{corrected_power(plw8, nominal, fit.field_hz):.6g} W"),
-                    ("Correction factor",
-                     f"{(nominal / fit.field_hz) ** 2:.4f}"),
                     ("PLW8 for target field",
                      f"{corrected_power(plw8, target, fit.field_hz):.6g} W"),
                 ]
@@ -729,6 +782,19 @@ class CestPanel(QWidget):
         )
         if name:
             Path(name).write_text(text + "\n", encoding="utf-8")
+
+
+def plw1_for(p1_us: float, plw1_w: float, pulse_us: float) -> float:
+    """plw = plw1*(p1/pulse)^2 -- the relation both pulse programs use.
+
+    19f_calib_nut computes plw8 this way from p8, and 19f_cest computes
+    plw25 from p25. Reproducing it lets the panel show exactly what the
+    spectrometer will derive from a given CNST, so the value can be checked
+    in eda rather than taken on trust.
+    """
+    if pulse_us <= 0 or p1_us <= 0 or plw1_w <= 0:
+        return float("nan")
+    return plw1_w * (p1_us / pulse_us) ** 2
 
 
 def _get_float(acqus: dict, key: str, index: int) -> float:
