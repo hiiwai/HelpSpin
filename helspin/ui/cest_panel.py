@@ -23,8 +23,9 @@ from pathlib import Path
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -32,6 +33,8 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -61,16 +64,31 @@ from ..infrastructure.cest_reader import (
     nutation_axis,
     read_offsets,
 )
-from ..services.cest_fit import fit_dip, polish_nutation
+from ..services.cest_fit import fit_dip, fit_two_dips, polish_nutation
 
 MEASURE_MODES = (("Integral", "integral"), ("Peak height", "height"),
                  ("Fixed point", "fixed"))
 
+# Distinguishable at a glance and safe for the common colour-vision
+# deficiencies -- an overlay of five Z-spectra is unreadable otherwise.
+OVERLAY_COLOURS = (
+    "#1b6ca8", "#d1495b", "#3f8f52", "#8b5fbf", "#e0a458",
+    "#00838f", "#a8442a", "#5a6b7c",
+)
+
 
 class _Plot(FigureCanvasQTAgg):
-    """Small matplotlib canvas with an optional residual strip."""
+    """Small matplotlib canvas with an optional residual strip.
 
-    def __init__(self, residuals: bool = False):
+    Wheel scrolling zooms the x axis about the cursor. Typing numbers into
+    range boxes is fine for a precise window but hopeless for hunting, which
+    is what the Z-spectrum is actually for -- the reader wants to sweep along
+    the baseline looking for a dip, not compute two bounds each time.
+    """
+
+    zoomed = Signal()
+
+    def __init__(self, residuals: bool = False, wheel_zoom: bool = False):
         figure = Figure(figsize=(5.4, 3.8), layout="constrained")
         super().__init__(figure)
         if residuals:
@@ -79,6 +97,58 @@ class _Plot(FigureCanvasQTAgg):
         else:
             self.axes = figure.add_subplot(1, 1, 1)
             self.residual_axes = None
+        self._wheel_zoom = wheel_zoom
+        if wheel_zoom:
+            self.setFocusPolicy(Qt.WheelFocus)
+
+    def wheelEvent(self, event):
+        """Zoom x about the cursor; with Shift held, zoom y instead.
+
+        Anchored on the cursor rather than the axis centre so the feature
+        under the pointer stays put -- centre-anchored zoom walks the thing
+        you are looking at off the edge.
+        """
+        if not self._wheel_zoom:
+            super().wheelEvent(event)
+            return
+        delta = event.angleDelta().y()
+        if not delta:
+            return
+        # 0.85 per notch: brisk enough to cross a Z-spectrum in a few turns,
+        # gentle enough to settle on a dip.
+        factor = 0.85 if delta > 0 else 1.0 / 0.85
+
+        position = event.position()
+        height = max(self.height(), 1)
+        width = max(self.width(), 1)
+        inside = self.axes.get_position()
+        # Qt y grows downward, matplotlib figure coordinates grow upward.
+        fx = position.x() / width
+        fy = 1.0 - position.y() / height
+        if not (inside.x0 <= fx <= inside.x1 and inside.y0 <= fy <= inside.y1):
+            return                      # outside the axes: not our gesture
+
+        vertical = bool(event.modifiers() & Qt.ShiftModifier)
+        if vertical:
+            low, high = self.axes.get_ylim()
+            frac = (fy - inside.y0) / max(inside.y1 - inside.y0, 1e-9)
+        else:
+            low, high = self.axes.get_xlim()
+            frac = (fx - inside.x0) / max(inside.x1 - inside.x0, 1e-9)
+        anchor = low + (high - low) * frac
+        new_low = anchor + (low - anchor) * factor
+        new_high = anchor + (high - anchor) * factor
+        if new_low == new_high:
+            return
+        if vertical:
+            self.axes.set_ylim(new_low, new_high)
+        else:
+            # Preserve the axis direction: on the Z-spectrum x is inverted
+            # for NMR convention, and set_xlim would silently undo it.
+            self.axes.set_xlim(new_low, new_high)
+        self.draw_idle()
+        self.zoomed.emit()
+        event.accept()
 
     def clear(self):
         self.axes.clear()
@@ -97,6 +167,12 @@ class CestPanel(QWidget):
         self._offsets = None
         self._fit = None
         self._z = None
+        # Kept Z-spectra, each already normalised to ITS OWN I0 so that
+        # experiments with different receiver gain, scan count or
+        # concentration are still comparable on one axis. Storing the
+        # normalised curve rather than the raw rows also means an overlay
+        # entry survives its dataset being unloaded.
+        self._overlays: list[tuple[str, object]] = []
 
         self._path_label = QLabel("No experiment loaded")
         self._path_label.setWordWrap(True)
@@ -149,6 +225,14 @@ class CestPanel(QWidget):
         # signal was discarded.
         self._n_half.setValue(0.03)
         self._n_half.setSuffix(" ppm")
+        self._n_half.setToolTip(
+            "Half-width: the window runs centre MINUS this to centre PLUS\n"
+            "this. Narrow is better here -- on 19F data residuals fell from\n"
+            "7.0% at ±0.20 ppm to 3.9% at ±0.03 ppm."
+        )
+        self._n_span = QLabel("—")
+        self._n_centre.valueChanged.connect(self._update_n_span)
+        self._n_half.valueChanged.connect(self._update_n_span)
         self._n_mode = QComboBox()
         for label, value in MEASURE_MODES:
             self._n_mode.addItem(label, value)
@@ -174,7 +258,8 @@ class CestPanel(QWidget):
 
         form = QFormLayout()
         form.addRow("Peak centre", self._n_centre)
-        form.addRow("Half-width", self._n_half)
+        form.addRow("Half-width (±)", self._n_half)
+        form.addRow("Window", self._n_span)
         form.addRow("Measurement", self._n_mode)
         form.addRow("Model", self._n_model)
         form.addRow("", self._n_baseline)
@@ -225,6 +310,14 @@ class CestPanel(QWidget):
         self._z_half.setSingleStep(0.01)
         self._z_half.setValue(0.12)
         self._z_half.setSuffix(" ppm")
+        self._z_half.setToolTip(
+            "Half-width: the window runs centre MINUS this to centre PLUS\n"
+            "this, and every row is measured over exactly the same span."
+        )
+        self._z_span = QLabel("—")
+        self._z_span.setToolTip("Resulting window, and how many points it covers.")
+        self._z_centre.valueChanged.connect(self._update_z_span)
+        self._z_half.valueChanged.connect(self._update_z_span)
         self._z_mode = QComboBox()
         for label, value in (("Peak height", "height"), ("Integral", "integral"),
                              ("Fixed point", "fixed")):
@@ -255,6 +348,12 @@ class CestPanel(QWidget):
             "One sigma per point, measured from the signal-free part of that\n"
             "row's own spectrum and propagated through the I0 division."
         )
+        self._z_two = QCheckBox("Fit two dips together")
+        self._z_two.setToolTip(
+            "Fits the deepest dip and the best other candidate at the same\n"
+            "time, so the major dip's wings do not bias the minor depth.\n"
+            "Reports positions, widths and a depth ratio -- NOT a population."
+        )
         self._z_residual = QCheckBox("Subtract fitted dip (reveal second dip)")
         self._z_residual.setToolTip(
             "Direct saturation is far deeper than any exchange feature and\n"
@@ -277,12 +376,15 @@ class CestPanel(QWidget):
         self._z_ymax.setRange(-10.0, 10.0)
         self._z_ymax.setDecimals(3)
         self._z_ymax.setSingleStep(0.01)
+        # Three decimals because these boxes show ppm as well as Hz, and one
+        # decimal cannot express a ppm offset -- it would round the wheel's
+        # position away and make the readout disagree with the plot.
         self._z_xmin = QDoubleSpinBox()
         self._z_xmin.setRange(-1e6, 1e6)
-        self._z_xmin.setDecimals(1)
+        self._z_xmin.setDecimals(3)
         self._z_xmax = QDoubleSpinBox()
         self._z_xmax.setRange(-1e6, 1e6)
-        self._z_xmax.setDecimals(1)
+        self._z_xmax.setDecimals(3)
         for box in (self._z_xmin, self._z_xmax, self._z_ymin, self._z_ymax):
             box.valueChanged.connect(self._apply_z_limits)
         self._z_full = QPushButton("Full range")
@@ -290,12 +392,14 @@ class CestPanel(QWidget):
 
         form = QFormLayout()
         form.addRow("Peak centre", self._z_centre)
-        form.addRow("Half-width", self._z_half)
+        form.addRow("Half-width (±)", self._z_half)
+        form.addRow("Window", self._z_span)
         form.addRow("Measurement", self._z_mode)
         form.addRow("Reference from", self._z_ref)
         form.addRow("", self._z_ppm)
         form.addRow("", self._z_errors)
         form.addRow("", self._z_dips)
+        form.addRow("", self._z_two)
         form.addRow("", self._z_residual)
         form.addRow("", self._z_sigma)
         zoom_x = QHBoxLayout()
@@ -307,6 +411,25 @@ class CestPanel(QWidget):
         zoom_y.addWidget(self._z_ymax)
         form.addRow("Y range", zoom_y)
         form.addRow("", self._z_full)
+
+        self._overlay_list = QListWidget()
+        self._overlay_list.setMaximumHeight(96)
+        self._overlay_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self._overlay_list.setToolTip(
+            "Kept Z-spectra, drawn together with the current one.\n"
+            "Each keeps its own I0 normalisation, so experiments with\n"
+            "different gain, scans or concentration stay comparable."
+        )
+        keep_button = QPushButton("Keep on plot")
+        keep_button.clicked.connect(self._keep_overlay)
+        drop_button = QPushButton("Remove")
+        drop_button.clicked.connect(self._drop_overlay)
+        clear_button = QPushButton("Clear all")
+        clear_button.clicked.connect(self._clear_overlays)
+        overlay_buttons = QHBoxLayout()
+        overlay_buttons.addWidget(keep_button)
+        overlay_buttons.addWidget(drop_button)
+        overlay_buttons.addWidget(clear_button)
 
         build_button = QPushButton("Build Z-spectrum")
         build_button.clicked.connect(self._build_z)
@@ -330,7 +453,8 @@ class CestPanel(QWidget):
         controls_layout.addWidget(QLabel("Result"))
         controls_layout.addWidget(self._z_result, 1)
 
-        self._z_plot = _Plot()
+        self._z_plot = _Plot(wheel_zoom=True)
+        self._z_plot.zoomed.connect(self._sync_z_limit_boxes)
         split = QSplitter(Qt.Horizontal)
         split.addWidget(controls)
         split.addWidget(self._z_plot)
@@ -341,6 +465,33 @@ class CestPanel(QWidget):
         page_layout = QVBoxLayout(page)
         page_layout.addWidget(split)
         return page
+
+    def _span_text(self, centre: float, half: float) -> str:
+        """The window a centre and half-width actually produce.
+
+        Shown because "Half-width 0.12" does not tell you the span is 0.24 ppm
+        wide, nor how many points that is -- and the point count is what
+        decides whether an integral is averaging noise or accumulating
+        baseline.
+        """
+        low, high = centre - half, centre + half
+        if self._data is None:
+            return f"{low:+.4f} to {high:+.4f} ppm"
+        try:
+            lo, hi = window_indices(self._data.ppm, centre, half)
+        except CestError:
+            return f"{low:+.4f} to {high:+.4f} ppm"
+        return f"{low:+.4f} to {high:+.4f} ppm  ({hi - lo} pts)"
+
+    def _update_z_span(self) -> None:
+        self._z_span.setText(
+            self._span_text(self._z_centre.value(), self._z_half.value())
+        )
+
+    def _update_n_span(self) -> None:
+        self._n_span.setText(
+            self._span_text(self._n_centre.value(), self._n_half.value())
+        )
 
     # ----------------------------------------------------------------- load
 
@@ -751,6 +902,53 @@ class CestPanel(QWidget):
                               "the sigma setting, or improve the noise with "
                               "more scans, to look deeper."]
 
+        if (
+            self._z_two.isChecked()
+            and fitted is not None
+            and self._z_dips.isChecked()
+        ):
+            others = [c for c in dip_candidates(z, min_sigma=self._z_sigma.value())
+                      if abs(c[0] - fitted.centre_hz) > max(fitted.width_hz, 1.0)]
+            if not others:
+                lines += ["", "Two-dip fit skipped: no second candidate above "
+                              "the threshold."]
+            else:
+                try:
+                    pair = fit_two_dips(z, fitted.centre_hz, others[0][0])
+                    d_major, c_major, w_major = pair.major
+                    d_minor, c_minor, w_minor = pair.minor
+                    lines += [
+                        "",
+                        "TWO-DIP FIT",
+                        f"  major   {c_major:+8.1f} Hz "
+                        f"({c_major / z.sfo1_mhz:+.4f} ppm)"
+                        f"   depth {d_major:.4f}   fwhm {w_major:.0f} Hz",
+                        f"  minor   {c_minor:+8.1f} Hz "
+                        f"({c_minor / z.sfo1_mhz:+.4f} ppm)"
+                        f"   depth {d_minor:.4f}   fwhm {w_minor:.0f} Hz",
+                        f"  separation  {pair.separation_hz:+.1f} Hz "
+                        f"= {pair.separation_ppm:+.4f} ppm",
+                        f"  minor share of total depth  "
+                        f"{100 * pair.minor_fraction:.1f}%",
+                        f"  fit residual {pair.residual_rms:.4f} "
+                        f"({pair.residual_rms / sigma:.1f} sigma)"
+                        if math.isfinite(sigma) and sigma > 0 else
+                        f"  fit residual {pair.residual_rms:.4f}",
+                        "",
+                        "  The percentage is a DEPTH RATIO, not a populated "
+                        "fraction. Dip depth depends on the exchange rate, "
+                        "the saturation field, D18 and both states' "
+                        "relaxation as well as on population, so a small "
+                        "population in fast exchange can dig deeper than a "
+                        "larger one in slow exchange. It is reproducible and "
+                        "comparable between experiments run under IDENTICAL "
+                        "conditions -- a titration or a control series -- "
+                        "but a real population needs Bloch-McConnell fitting "
+                        "against several saturation fields.",
+                    ]
+                except CestError as exc:
+                    lines += ["", f"Two-dip fit failed: {exc}"]
+
         if self._z_residual.isChecked() and fitted is not None:
             display = remove_dip(z, fitted.baseline, fitted.depth,
                                  fitted.centre_hz, fitted.width_hz)
@@ -760,8 +958,8 @@ class CestPanel(QWidget):
                           "construction."]
 
         self._z_result.setPlainText("\n".join(lines))
-        self._draw_z(display, None if display is not z else fitted)
         self._seed_z_limits(display)
+        self._draw_z(display, None if display is not z else fitted)
 
     def _draw_z(self, z, fitted) -> None:
         from ..domain.cest import lorentzian_dip
@@ -774,15 +972,28 @@ class CestPanel(QWidget):
         interior = ~z.reference_mask
         errors = z.error
 
+        # Kept spectra first, so the current one draws on top of them.
+        for index, (name, kept) in enumerate(self._overlays):
+            kx = kept.offsets_ppm if use_ppm else kept.offsets_hz
+            keep_interior = ~kept.reference_mask
+            axes.plot(
+                kx[keep_interior], kept.intensity[keep_interior],
+                "-", lw=1.0, alpha=0.75,
+                color=OVERLAY_COLOURS[index % len(OVERLAY_COLOURS)],
+                label=name,
+            )
+
+        current_label = "current" if self._overlays else "I/I$_0$"
         if errors is not None and np.any(np.isfinite(errors)):
             axes.errorbar(
                 x[interior], z.intensity[interior],
                 yerr=errors[interior], fmt="o-", ms=4, lw=1.0, elinewidth=0.9,
-                capsize=2, color="#1b6ca8", ecolor="#1b6ca8", label="I/I$_0$",
+                capsize=2, color="#111111", ecolor="#111111",
+                label=current_label,
             )
         else:
             axes.plot(x[interior], z.intensity[interior], "o-", ms=4, lw=1.0,
-                      color="#1b6ca8", label="I/I$_0$")
+                      color="#111111", label=current_label)
         if z.reference_mask.any():
             axes.plot(x[z.reference_mask], z.intensity[z.reference_mask], "s",
                       ms=6, color="#e0a458", label="I$_0$ reference")
@@ -796,7 +1007,7 @@ class CestPanel(QWidget):
         # A one-sigma band makes a marginal dip readable at a glance: a point
         # dipping below it is worth a second look, one inside it is not.
         sigma = z.noise
-        if math.isfinite(sigma) and sigma > 0:
+        if not self._overlays and math.isfinite(sigma) and sigma > 0:
             baseline = float(np.median(z.intensity[interior]))
             axes.axhspan(baseline - sigma, baseline + sigma,
                          color="#999", alpha=0.15, lw=0, label="\u00b11 sigma")
@@ -809,7 +1020,8 @@ class CestPanel(QWidget):
             else "saturation offset from carrier (Hz)"
         )
         axes.set_ylabel("I / I$_0$")
-        axes.legend(loc="lower right", frameon=False, fontsize=8)
+        axes.legend(loc="lower right", frameon=False,
+                    fontsize=7 if self._overlays else 8)
         self._z_axes_ready = True
         self._apply_z_limits()
         plot.draw_idle()
@@ -822,8 +1034,14 @@ class CestPanel(QWidget):
         blocked while setting: each setValue would otherwise fire
         valueChanged, and four of those would redraw the plot four times.
         """
-        x = z.offsets_ppm if self._z_ppm.isChecked() else z.offsets_hz
-        y = z.intensity
+        use_ppm = self._z_ppm.isChecked()
+        xs = [z.offsets_ppm if use_ppm else z.offsets_hz]
+        ys = [z.intensity]
+        for _, kept in self._overlays:
+            xs.append(kept.offsets_ppm if use_ppm else kept.offsets_hz)
+            ys.append(kept.intensity)
+        x = np.concatenate(xs)
+        y = np.concatenate(ys)
         pad_y = 0.05 * (float(np.ptp(y)) or 1.0)
         for box, value in (
             (self._z_xmin, float(np.min(x))), (self._z_xmax, float(np.max(x))),
@@ -849,6 +1067,110 @@ class CestPanel(QWidget):
         if hi_y > lo_y:
             axes.set_ylim(lo_y, hi_y)
         self._z_plot.draw_idle()
+
+    def _sync_z_limit_boxes(self) -> None:
+        """Write the axes' limits back into the range boxes after a wheel zoom.
+
+        Without this the boxes still show the pre-zoom numbers, and the next
+        keystroke in one of them would snap the view back to where the wheel
+        started. Signals are blocked so writing them does not re-apply and
+        fight the zoom that just happened.
+        """
+        low_x, high_x = self._z_plot.axes.get_xlim()
+        low_y, high_y = self._z_plot.axes.get_ylim()
+        # x is displayed inverted, so the axis reports (high, low).
+        pairs = (
+            (self._z_xmin, min(low_x, high_x)), (self._z_xmax, max(low_x, high_x)),
+            (self._z_ymin, min(low_y, high_y)), (self._z_ymax, max(low_y, high_y)),
+        )
+        for box, value in pairs:
+            blocked = box.blockSignals(True)
+            box.setValue(value)
+            box.blockSignals(blocked)
+
+    def _keep_overlay(self) -> None:
+        """Add the current Z-spectrum to the overlay set."""
+        if self._z is None:
+            self._z_result.setPlainText("Build a Z-spectrum before keeping it.")
+            return
+        name = Path(self._data_path).parent.name or str(self._data_path)
+        label = f"{name}/{Path(self._data_path).name}"
+        # A field and duration suffix, because the usual reason to overlay is
+        # a power or saturation-time series and the expno alone does not say
+        # which is which.
+        field = _get_float(self._data.acqus, "CNST", 25)
+        d18 = _get_float(self._data.acqus, "D", 18)
+        if field > 0:
+            label += f"  {field:.0f} Hz"
+        if d18 > 0:
+            label += f" / {d18:g} s"
+        if any(existing == label for existing, _ in self._overlays):
+            label = f"{label} ({len(self._overlays) + 1})"
+        self._overlays.append((label, self._z))
+        self._overlay_list.addItem(QListWidgetItem(label))
+        self._build_z()
+
+    def _drop_overlay(self) -> None:
+        for item in self._overlay_list.selectedItems():
+            row = self._overlay_list.row(item)
+            self._overlay_list.takeItem(row)
+            del self._overlays[row]
+        self._build_z()
+
+    def _clear_overlays(self) -> None:
+        self._overlays.clear()
+        self._overlay_list.clear()
+        self._build_z()
+
+    def _on_z_scroll(self, event) -> None:
+        """Wheel zooms X about the cursor; shift-wheel zooms Y.
+
+        Anchored on the pointer rather than the axis centre, so the feature
+        being examined stays under the cursor instead of sliding away -- the
+        behaviour every plotting tool has trained the hand for.
+        """
+        axes = self._z_plot.axes
+        if event.inaxes is not axes or not event.step:
+            return
+        factor = 0.85 ** event.step
+        shift = bool(getattr(event, "key", None) and "shift" in str(event.key))
+        if shift:
+            anchor = event.ydata
+            low, high = axes.get_ylim()
+            if anchor is None:
+                return
+            axes.set_ylim(anchor + (low - anchor) * factor,
+                          anchor + (high - anchor) * factor)
+        else:
+            anchor = event.xdata
+            low, high = axes.get_xlim()
+            if anchor is None:
+                return
+            # The X axis is INVERTED for NMR convention, so low > high here.
+            # Scaling both ends about the anchor preserves that ordering;
+            # sorting them would silently flip the spectrum.
+            axes.set_xlim(anchor + (low - anchor) * factor,
+                          anchor + (high - anchor) * factor)
+        self._sync_z_boxes()
+        self._z_plot.draw_idle()
+
+    def _on_z_click(self, event) -> None:
+        """Double-click anywhere on the plot returns to the full range."""
+        if getattr(event, "dblclick", False):
+            self._reset_z_limits()
+
+    def _sync_z_boxes(self) -> None:
+        """Make the range boxes follow the wheel, without redrawing again."""
+        axes = self._z_plot.axes
+        high_x, low_x = axes.get_xlim()      # inverted axis
+        low_y, high_y = axes.get_ylim()
+        for box, value in (
+            (self._z_xmin, low_x), (self._z_xmax, high_x),
+            (self._z_ymin, low_y), (self._z_ymax, high_y),
+        ):
+            blocked = box.blockSignals(True)
+            box.setValue(float(value))
+            box.blockSignals(blocked)
 
     def _reset_z_limits(self) -> None:
         """Back to the full data range."""

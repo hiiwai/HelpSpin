@@ -582,6 +582,24 @@ def remove_dip(z: ZSpectrum, baseline: float, depth: float,
     )
 
 
+def two_lorentzian(x, baseline: float, depth_a: float, centre_a: float,
+                   width_a: float, depth_b: float, centre_b: float,
+                   width_b: float):
+    """Baseline minus two Lorentzian dips.
+
+    Two independent dips that simply subtract. That is an approximation: a
+    real two-state CEST profile comes from the Bloch-McConnell equations, in
+    which the major and minor dips are coupled through the exchange rate and
+    are not separable like this. It is good enough to LOCATE a second dip and
+    measure its position and width, and not good enough to derive rate
+    constants from.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    first = depth_a / (1.0 + (2.0 * (x - centre_a) / width_a) ** 2)
+    second = depth_b / (1.0 + (2.0 * (x - centre_b) / width_b) ** 2)
+    return baseline - first - second
+
+
 def seed_dips(
     z: ZSpectrum, *, min_depth: float = 0.05, exclude_reference: bool = True
 ) -> list[tuple[float, float]]:

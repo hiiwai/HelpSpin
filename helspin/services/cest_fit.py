@@ -21,6 +21,7 @@ from ..domain.cest import (
     lorentzian_dip,
     nutation_model,
     search_nutation,
+    two_lorentzian,
 )
 
 
@@ -222,5 +223,103 @@ def fit_dip(
         width_hz=float(popt[3]),
         baseline=float(popt[0]),
         sfo1_mhz=z.sfo1_mhz,
+        residual_rms=float(np.sqrt(np.mean(residual ** 2))),
+    )
+
+
+class TwoDipFit:
+    """Two dips fitted together, with the minor one's apparent weight.
+
+    `minor_fraction` is the minor dip's depth as a fraction of the total dip
+    depth. It is NOT a populated fraction, and the distinction matters enough
+    to be worth stating wherever the number is shown.
+
+    In a CEST experiment the depth of a minor-state dip depends on the
+    populated fraction AND on the exchange rate, the saturation field, the
+    saturation time and both states' relaxation rates. Saturation transferred
+    to the observed state during d18 is what makes the dip, so a small
+    population in fast exchange can dig deeper than a larger one in slow
+    exchange. Reading depth as population is only defensible in the limit of
+    full saturation and complete transfer, which a real experiment does not
+    reach.
+
+    Getting an actual population means fitting Bloch-McConnell against
+    several saturation fields, which is deliberately not attempted here. What
+    this fit does give honestly: both dip positions, their widths, and a
+    depth ratio that is reproducible and comparable BETWEEN experiments run
+    under identical conditions -- which is what a titration or a control
+    series needs.
+    """
+
+    __slots__ = ("baseline", "major", "minor", "sfo1_mhz", "residual_rms",
+                 "minor_fraction", "separation_hz")
+
+    def __init__(self, baseline, major, minor, sfo1_mhz, residual_rms):
+        self.baseline = baseline
+        self.major = major            # (depth, centre_hz, width_hz)
+        self.minor = minor
+        self.sfo1_mhz = sfo1_mhz
+        self.residual_rms = residual_rms
+        total = major[0] + minor[0]
+        self.minor_fraction = (minor[0] / total) if total > 0 else float("nan")
+        self.separation_hz = minor[1] - major[1]
+
+    @property
+    def separation_ppm(self) -> float:
+        return self.separation_hz / self.sfo1_mhz
+
+
+def fit_two_dips(z: ZSpectrum, centre_a_hz: float, centre_b_hz: float) -> TwoDipFit:
+    """Fit two Lorentzian dips simultaneously across the whole profile.
+
+    Fitted together rather than one after the other: the major dip's wings
+    reach under the minor one, so fitting it alone and subtracting biases the
+    minor depth by whatever the wing contributes there. Both are constrained
+    to stay near their seeds so the pair cannot collapse onto the same
+    feature, which is the usual failure of a two-component fit.
+    """
+    x = np.asarray(z.offsets_hz, dtype=np.float64)
+    y = np.asarray(z.intensity, dtype=np.float64)
+    keep = ~z.reference_mask
+    x, y = x[keep], y[keep]
+    if x.size < 8:
+        raise CestError("too few offsets to fit two dips")
+    if centre_a_hz == centre_b_hz:
+        raise CestError("the two dips need different starting positions")
+
+    span = float(np.ptp(x)) or 1.0
+    spacing = float(np.median(np.abs(np.diff(np.sort(x))))) or 1.0
+    baseline0 = float(np.percentile(y, 90))
+    depth_a0 = max(baseline0 - float(np.min(y)), 1e-6)
+    depth_b0 = max(depth_a0 * 0.1, 1e-6)
+    width0 = max(4.0 * spacing, 1.0)
+    # Each centre may move by a quarter of the gap between them, so they
+    # cannot swap or merge.
+    slack = max(abs(centre_b_hz - centre_a_hz) / 4.0, 2.0 * spacing)
+
+    try:
+        curve_fit = _curve_fit()
+        popt, _ = curve_fit(
+            two_lorentzian, x, y,
+            p0=[baseline0, depth_a0, centre_a_hz, width0,
+                depth_b0, centre_b_hz, width0],
+            bounds=(
+                [-np.inf, 0.0, centre_a_hz - slack, spacing,
+                 0.0, centre_b_hz - slack, spacing],
+                [np.inf, np.inf, centre_a_hz + slack, span,
+                 np.inf, centre_b_hz + slack, span],
+            ),
+            maxfev=400_000,
+        )
+    except Exception as exc:
+        raise CestError(f"two-dip fit did not converge: {exc}") from exc
+
+    residual = y - two_lorentzian(x, *popt)
+    baseline, da, ca, wa, db, cb, wb = (float(v) for v in popt)
+    major, minor = (da, ca, wa), (db, cb, wb)
+    if db > da:                       # report the deeper one as major
+        major, minor = minor, major
+    return TwoDipFit(
+        baseline=baseline, major=major, minor=minor, sfo1_mhz=z.sfo1_mhz,
         residual_rms=float(np.sqrt(np.mean(residual ** 2))),
     )

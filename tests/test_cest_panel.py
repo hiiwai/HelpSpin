@@ -336,3 +336,201 @@ def test_residual_view_announces_itself(panel, tmp_path):
     text = panel._z_result.toPlainText()
     if "Dip centre" in text:
         assert "SHOWING RESIDUAL" in text
+
+
+def _wheel(plot, notches=1, shift=False):
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+
+    position = QPointF(plot.width() * 0.5, plot.height() * 0.5)
+    plot.wheelEvent(QWheelEvent(
+        position, plot.mapToGlobal(position.toPoint()),
+        QPoint(0, 0), QPoint(0, 120 * notches),
+        Qt.NoButton, Qt.ShiftModifier if shift else Qt.NoModifier,
+        Qt.NoScrollPhase, False,
+    ))
+
+
+def test_wheel_zooms_x_and_keeps_the_axis_inverted(panel, tmp_path):
+    """Typing bounds is fine for a precise window, useless for hunting."""
+    root = make_dataset(tmp_path / "wheel", n_rows=N, si_f1=N, offsets=DEFAULT_OFFSETS)
+    panel.load(root)
+    panel.resize(900, 600)
+    panel._build_z()
+    before = panel._z_plot.axes.get_xlim()
+    _wheel(panel._z_plot, 1)
+    after = panel._z_plot.axes.get_xlim()
+    assert abs(after[1] - after[0]) < abs(before[1] - before[0])
+    assert after[0] > after[1], "NMR axis inversion lost on zoom"
+
+
+def test_wheel_out_widens_the_view(panel, tmp_path):
+    root = make_dataset(tmp_path / "wheel2", n_rows=N, si_f1=N, offsets=DEFAULT_OFFSETS)
+    panel.load(root)
+    panel.resize(900, 600)
+    panel._build_z()
+    before = panel._z_plot.axes.get_xlim()
+    _wheel(panel._z_plot, -1)
+    after = panel._z_plot.axes.get_xlim()
+    assert abs(after[1] - after[0]) > abs(before[1] - before[0])
+
+
+def test_shift_wheel_zooms_y(panel, tmp_path):
+    """Y is what matters when hunting a shallow dip on a deep baseline."""
+    root = make_dataset(tmp_path / "wheel3", n_rows=N, si_f1=N, offsets=DEFAULT_OFFSETS)
+    panel.load(root)
+    panel.resize(900, 600)
+    panel._build_z()
+    before_x = panel._z_plot.axes.get_xlim()
+    before_y = panel._z_plot.axes.get_ylim()
+    _wheel(panel._z_plot, 1, shift=True)
+    assert panel._z_plot.axes.get_xlim() == pytest.approx(before_x)
+    after_y = panel._z_plot.axes.get_ylim()
+    assert abs(after_y[1] - after_y[0]) < abs(before_y[1] - before_y[0])
+
+
+def test_wheel_zoom_updates_the_range_boxes(panel, tmp_path):
+    """Stale boxes would snap the view back on the next keystroke."""
+    root = make_dataset(tmp_path / "wheel4", n_rows=N, si_f1=N, offsets=DEFAULT_OFFSETS)
+    panel.load(root)
+    panel.resize(900, 600)
+    panel._build_z()
+    _wheel(panel._z_plot, 1)
+    low, high = sorted(panel._z_plot.axes.get_xlim())
+    assert panel._z_xmin.value() == pytest.approx(low, abs=0.5)
+    assert panel._z_xmax.value() == pytest.approx(high, abs=0.5)
+
+
+def test_two_dip_output_says_it_is_not_a_population(panel, tmp_path):
+    """The number is a depth ratio; saying otherwise would be misleading."""
+    root = make_dataset(tmp_path / "two", n_rows=N, si_f1=N, offsets=DEFAULT_OFFSETS)
+    panel.load(root)
+    panel._z_two.setChecked(True)
+    panel._build_z()
+    text = panel._z_result.toPlainText()
+    if "TWO-DIP FIT" in text:
+        assert "not a populated" in text
+        assert "Bloch-McConnell" in text
+
+
+class _WheelEvent:
+    """Stand-in for a matplotlib scroll event."""
+
+    def __init__(self, axes, xdata, ydata, step, key=None):
+        self.inaxes = axes
+        self.xdata = xdata
+        self.ydata = ydata
+        self.step = step
+        self.key = key
+        self.dblclick = False
+
+
+def _built(panel, tmp_path, name):
+    root = make_dataset(tmp_path / name, n_rows=N, si_f1=N, offsets=DEFAULT_OFFSETS)
+    panel.load(root)
+    panel._build_z()
+    return root
+
+
+def test_window_readout_shows_the_span_and_point_count(panel, tmp_path):
+    """"Half-width 0.12" does not tell you the window is 0.24 ppm wide."""
+    _built(panel, tmp_path, "span")
+    panel._z_centre.setValue(-5.0)
+    panel._z_half.setValue(0.25)
+    text = panel._z_span.text()
+    assert "-5.2500" in text and "-4.7500" in text
+    assert "pts)" in text
+
+
+def test_keeping_and_removing_overlays(panel, tmp_path):
+    _built(panel, tmp_path, "ov")
+    assert panel._overlays == []
+    panel._keep_overlay()
+    assert len(panel._overlays) == 1
+    assert panel._overlay_list.count() == 1
+
+    panel._keep_overlay()
+    assert len(panel._overlays) == 2
+    # A repeat of the same experiment must not collide in the legend.
+    assert panel._overlays[0][0] != panel._overlays[1][0]
+
+    panel._overlay_list.selectAll()
+    panel._drop_overlay()
+    assert panel._overlays == []
+    assert panel._overlay_list.count() == 0
+
+
+def test_clear_all_removes_every_overlay(panel, tmp_path):
+    _built(panel, tmp_path, "clr")
+    panel._keep_overlay()
+    panel._keep_overlay()
+    panel._clear_overlays()
+    assert panel._overlays == []
+    assert panel._overlay_list.count() == 0
+
+
+def test_keeping_before_building_is_refused(panel):
+    panel._keep_overlay()
+    assert "before keeping" in panel._z_result.toPlainText()
+    assert panel._overlays == []
+
+
+def test_overlays_survive_loading_another_dataset(panel, tmp_path):
+    """The stored curve is normalised, so it does not depend on its rows."""
+    _built(panel, tmp_path, "first")
+    panel._keep_overlay()
+    kept = panel._overlays[0][1]
+    _built(panel, tmp_path, "second")
+    assert len(panel._overlays) == 1
+    assert panel._overlays[0][1] is kept
+
+
+def test_scroll_handler_keeps_the_axis_inverted(panel, tmp_path):
+    """Handler-level twin of the QWheelEvent test above.
+
+    That one proves Qt's wheel reaches matplotlib; this one drives
+    _on_z_scroll directly so the anchor and inversion arithmetic can be
+    checked without depending on widget geometry.
+    """
+    _built(panel, tmp_path, "wheel")
+    axes = panel._z_plot.axes
+    before = axes.get_xlim()
+    panel._on_z_scroll(_WheelEvent(axes, 0.0, 1.0, 3))
+    after = axes.get_xlim()
+    assert after[0] > after[1]                      # still inverted
+    assert abs(after[0] - after[1]) < abs(before[0] - before[1])
+    # The boxes follow the wheel rather than going stale.
+    assert panel._z_xmax.value() == pytest.approx(after[0], abs=1e-3)
+
+
+def test_shift_wheel_zooms_y_only(panel, tmp_path):
+    _built(panel, tmp_path, "wheely")
+    axes = panel._z_plot.axes
+    x_before = axes.get_xlim()
+    y_before = axes.get_ylim()
+    panel._on_z_scroll(_WheelEvent(axes, 0.0, 1.0, 3, key="shift"))
+    assert axes.get_xlim() == pytest.approx(x_before)
+    assert abs(axes.get_ylim()[1] - axes.get_ylim()[0]) < abs(y_before[1] - y_before[0])
+
+
+def test_wheel_outside_the_axes_is_ignored(panel, tmp_path):
+    _built(panel, tmp_path, "outside")
+    axes = panel._z_plot.axes
+    before = axes.get_xlim()
+    panel._on_z_scroll(_WheelEvent(None, 0.0, 1.0, 3))
+    panel._on_z_scroll(_WheelEvent(axes, None, 1.0, 3))   # off-canvas cursor
+    panel._on_z_scroll(_WheelEvent(axes, 0.0, 1.0, 0))    # no step
+    assert axes.get_xlim() == pytest.approx(before)
+
+
+def test_double_click_resets_the_view(panel, tmp_path):
+    _built(panel, tmp_path, "dbl")
+    axes = panel._z_plot.axes
+    full = axes.get_xlim()
+    panel._on_z_scroll(_WheelEvent(axes, 0.0, 1.0, 5))
+    assert axes.get_xlim() != pytest.approx(full)
+
+    event = _WheelEvent(axes, 0.0, 1.0, 0)
+    event.dblclick = True
+    panel._on_z_click(event)
+    assert axes.get_xlim() == pytest.approx(full)

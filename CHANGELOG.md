@@ -1,5 +1,102 @@
 # Changelog
 
+## 0.7.0 - 2026-09-06
+
+### Overlay several Z-spectra
+
+**Keep on plot** adds the current Z-spectrum to an overlay set drawn beneath
+the working one, with **Remove** and **Clear all** beside it. Entries label
+themselves with the experiment, saturation field and D18, since the usual
+reason to overlay is a power or duration series and an expno alone does not
+say which is which.
+
+Each kept spectrum stores its own normalised curve, so experiments with
+different receiver gain, scan count or concentration stay comparable, and an
+overlay entry survives its dataset being unloaded. This is what Part 7 of the
+19F CEST manual actually asks for: the same sample at 30/60/100 Hz, or a
+ligand-only control against ligand-plus-protein, on one axis.
+
+The sigma band is hidden while an overlay is showing, since it belongs to
+one spectrum and would be read as applying to all of them.
+
+### Wheel zoom
+
+Scroll to zoom X about the cursor, shift-scroll for Y, double-click to
+reset. The zoom is anchored on the pointer so the feature under examination
+stays put. The range boxes remain as a numeric readout and follow the wheel;
+they were a poor primary control for hunting a dip.
+
+Their precision went from one decimal to three -- one decimal cannot express
+a ppm offset, so the readout rounded away from what the plot was showing.
+
+### Fixed
+
+On the first build the plot kept matplotlib's autoscale margins while the
+range boxes already showed the data range, so the two disagreed and
+**Full range** visibly moved the plot. Limits are now seeded before drawing.
+
+### Integration window
+
+Unchanged in behaviour -- it always was a symmetric centre +/- half-width in
+ppm, applied identically to every row -- but it never said so. The field is
+now labelled "Half-width (+/-)" and a **Window** readout shows the resulting
+span and how many points it covers, on both tabs. The point count is what
+decides whether an integral is averaging noise or accumulating baseline.
+
+### Fixed
+
+A version bump performed by search-and-replace failed silently when the
+pattern did not match, so this release was first built claiming 0.6.4.
+Caught by verifying the version from the INSTALLED zip rather than from the
+source. A test now compares `helspin.__version__` against `pyproject.toml`,
+so a bump that does not take fails the suite instead of shipping.
+
+1070 tests (up from 1050).
+
+
+## 0.6.4 - 2026-09-06
+
+### Wheel zoom on the Z-spectrum
+
+Scroll to zoom x about the cursor; hold Shift to zoom y. Anchored on the
+pointer rather than the axis centre, so the feature you are looking at stays
+put instead of walking off the edge. The range boxes follow the wheel, so
+they no longer snap the view back on the next keystroke. Typing bounds is
+fine for a precise window and hopeless for hunting a dip, which is what the
+Z-spectrum is for.
+
+### Two-dip fitting
+
+**Fit two dips together** fits the deepest dip and the best other candidate
+simultaneously, reporting both positions, widths, their separation in Hz and
+ppm, and the minor dip's share of total depth.
+
+Fitted together rather than sequentially: the major dip's wings reach under
+the minor one, so fitting it alone and subtracting biases the minor depth by
+whatever the wing contributes there. Each centre is constrained to stay near
+its seed, so the pair cannot collapse onto one feature -- the usual failure
+of a two-component fit. Validated against a synthetic two-state profile:
+minor dip recovered at 649.7 Hz and depth 0.1188 against true values of 650
+and 0.12.
+
+**The percentage is a depth ratio, not a populated fraction**, and the panel
+says so. Dip depth depends on the exchange rate, the saturation field, D18
+and both states' relaxation as well as on population, so a small population
+in fast exchange can dig deeper than a larger one in slow exchange. The
+ratio is reproducible and comparable between experiments run under identical
+conditions -- a titration or a control series -- but a real population needs
+Bloch-McConnell fitting against several saturation fields.
+
+### Unchanged, for the record
+
+Integration was already a symmetric window in ppm: **Peak centre** plus
+**Half-width** give centre +/- half, applied identically to every row, and
+the integral is a plain sum of the real points inside it. The absolute scale
+does not matter because it cancels in I/I0.
+
+1061 tests (up from 1050).
+
+
 ## 0.6.3 - 2026-09-06
 
 ### Fixed: CEST panel read one row instead of the whole series

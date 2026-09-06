@@ -75,3 +75,23 @@ def test_version_flag_via_subprocess_prints_and_exits_zero_without_a_display():
     assert result.returncode == 0, result.stderr
     assert "HelSpin" in result.stdout
     assert helspin.__version__ in result.stdout
+
+
+def test_version_matches_pyproject():
+    """The installed metadata must match the source of truth.
+
+    A bump performed with a search-and-replace fails SILENTLY when the
+    pattern does not match, and the release then ships with the previous
+    version string while every other artefact claims the new one. Caught
+    exactly that way once; this makes the suite catch it instead.
+    """
+    import re
+
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    match = re.search(r'^version = "([^"]+)"', text, re.M)
+    assert match, "no version line in pyproject.toml"
+    assert helspin.__version__ == match.group(1), (
+        f"installed {helspin.__version__} but pyproject says {match.group(1)} "
+        "-- reinstall, or the bump did not take"
+    )

@@ -509,3 +509,71 @@ def test_removing_a_dip_flattens_it_and_leaves_the_rest():
     # ...and the small one is still there, and now findable.
     found = [c[0] for c in dip_candidates(flat, min_sigma=2.0)]
     assert any(abs(offset - 700.0) < 120.0 for offset in found)
+
+
+# ---------------------------------------------------------- two-dip fitting
+
+def _two_state(depth_a=0.90, depth_b=0.12, centre_b=650.0, noise=0.0):
+    offsets = np.array([-9000.0] + list(np.arange(-1500.0, 1501.0, 25.0)) + [9000.0])
+    major = depth_a / (1.0 + (2.0 * offsets / 180.0) ** 2)
+    minor = depth_b / (1.0 + (2.0 * (offsets - centre_b) / 120.0) ** 2)
+    values = 100.0 * (1.0 - major - minor)
+    if noise:
+        values = values + np.random.default_rng(0).normal(0.0, noise, offsets.shape)
+    return normalise_z(values, offsets, sfo1_mhz=564.62)
+
+
+def test_two_dip_fit_recovers_both_positions_and_depths():
+    from helspin.services.cest_fit import fit_two_dips
+
+    pair = fit_two_dips(_two_state(noise=0.15), 0.0, 650.0)
+    assert pair.major[1] == pytest.approx(0.0, abs=15.0)
+    assert pair.minor[1] == pytest.approx(650.0, abs=25.0)
+    assert pair.major[0] == pytest.approx(0.90, rel=0.1)
+    assert pair.minor[0] == pytest.approx(0.12, rel=0.2)
+    assert pair.separation_ppm == pytest.approx(650.0 / 564.62, abs=0.05)
+
+
+def test_deeper_dip_is_always_reported_as_major():
+    """Seed order must not decide which is called major."""
+    from helspin.services.cest_fit import fit_two_dips
+
+    z = _two_state(noise=0.1)
+    forwards = fit_two_dips(z, 0.0, 650.0)
+    backwards = fit_two_dips(z, 650.0, 0.0)
+    assert forwards.major[0] > forwards.minor[0]
+    assert backwards.major[0] > backwards.minor[0]
+    assert forwards.major[1] == pytest.approx(backwards.major[1], abs=25.0)
+
+
+def test_the_two_dips_cannot_collapse_onto_each_other():
+    """The usual failure of a two-component fit is both landing on one peak."""
+    from helspin.services.cest_fit import fit_two_dips
+
+    pair = fit_two_dips(_two_state(noise=0.2), 0.0, 650.0)
+    assert abs(pair.separation_hz) > 200.0
+
+
+def test_minor_fraction_is_a_depth_ratio():
+    """Documented as a depth ratio, so it must actually BE one."""
+    from helspin.services.cest_fit import fit_two_dips
+
+    pair = fit_two_dips(_two_state(), 0.0, 650.0)
+    total = pair.major[0] + pair.minor[0]
+    assert pair.minor_fraction == pytest.approx(pair.minor[0] / total)
+    assert 0.0 < pair.minor_fraction < 0.5
+
+
+def test_two_dip_fit_rejects_impossible_input():
+    from helspin.services.cest_fit import fit_two_dips
+
+    z = _two_state()
+    with pytest.raises(CestError):
+        fit_two_dips(z, 100.0, 100.0)          # identical seeds
+    tiny = ZSpectrum(
+        offsets_hz=np.arange(4.0), intensity=np.ones(4),
+        reference_mask=np.zeros(4, dtype=bool), i0=1.0,
+        i0_scatter=float("nan"), sfo1_mhz=564.62,
+    )
+    with pytest.raises(CestError):
+        fit_two_dips(tiny, 0.0, 2.0)

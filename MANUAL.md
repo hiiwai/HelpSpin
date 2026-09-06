@@ -359,6 +359,8 @@ blank trailing rows.
 ### Calibration tab
 
 Choose a peak centre and half-width, then **Fit nutation**. The window is
+symmetric — centre ± half-width, so 0.03 means a 0.06 ppm span — and the
+**Window** readout shows the resulting range and its point count. It is
 applied identically to every row and the result stays signed, because the
 sign inversion across rows is the measurement.
 
@@ -414,14 +416,32 @@ matched to anything.
 - **Subtract fitted dip** — removes the fitted profile so direct-saturation
   wings stop hiding a smaller dip beside them. For locating a feature, not
   for quantifying it.
-- **X range / Y range / Full range** — the direct-saturation dip runs to
-  near zero, so the baseline where a bound-state dip would sit is
-  compressed. Zooming Y to roughly 0.95–1.02 is usually what makes one
-  visible.
+- **Fit two dips together** — fits the deepest dip and the best other
+  candidate simultaneously, so the major dip's wings do not bias the minor
+  depth. Reports both positions, their separation, and the minor dip's share
+  of total depth. That share is a **depth ratio, not a population**: dip
+  depth also depends on exchange rate, saturation field, `D18` and
+  relaxation. Comparable between experiments run under identical conditions;
+  not a substitute for Bloch-McConnell.
+- **Zooming** — scroll to zoom X about the cursor, shift-scroll for Y,
+  double-click to reset. The range boxes are a readout and follow the wheel;
+  **Full range** also resets. The direct-saturation dip runs to near zero, so
+  the baseline where a bound-state dip would sit is compressed — zooming Y to
+  roughly 0.95–1.02 is usually what makes one visible.
+- **Keep on plot / Remove / Clear all** — overlay several Z-spectra for
+  comparison. Each keeps its own I₀ normalisation, so experiments with
+  different gain, scans or concentration remain comparable. Entries are
+  labelled with the experiment, saturation field and D18. Use this for the
+  power series (30/60/100 Hz) and the partner-free control from Part 7 of the
+  19F CEST manual — a real exchange feature moves predictably with field and
+  is absent from the control, and both are far easier to judge on one axis.
+
+Scroll the wheel over the plot to zoom x about the cursor; hold Shift to
+zoom y. The range boxes follow.
 
 ### Hunting a bound-state dip
 
-1. Zoom Y to about 0.95–1.02 so the baseline fills the plot.
+1. Shift-scroll to about 0.95–1.02 in y so the baseline fills the plot.
 2. Tick **Subtract fitted dip** to flatten the direct-saturation wings.
 3. Read the candidate list. Three sigma is worth following up, five is
    convincing.
