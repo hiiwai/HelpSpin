@@ -1,6 +1,7 @@
 """Per-trace scaling, selection, appearance preferences, and the list panel."""
 
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -1331,12 +1332,14 @@ def test_contours_survive_an_all_noise_matrix(qtbot):
 class DifferentLengthReader:
     """Two spectra with DIFFERENT point counts, sharing one peak."""
 
-    def __init__(self):
-        self.n = 0
-
     def read_1d(self, path, procno=1):
-        self.n += 1
-        size, extra = (512, 500.0) if self.n == 1 else (777, 0.0)
+        # Keyed on the PATH, not on a call counter. The canvas loads both
+        # spectra concurrently, so a counter makes "which one gets the extra
+        # peak" depend on thread scheduling: the same commit then passes on
+        # one machine and fails on another with a sign-flipped result, which
+        # is what happened between two of the author's computers.
+        first = str(path).endswith("/a")
+        size, extra = (512, 500.0) if first else (777, 0.0)
         x = np.linspace(0, 10, size)
         s = FakeSpectrum(size)
         s.real = 1000 * np.exp(-((x - 3) / 0.1) ** 2) + extra * np.exp(
@@ -2465,3 +2468,64 @@ def test_a_later_drop_still_goes_to_the_end(qtbot):
     canvas._on_loaded("/d/9", np.linspace(10.0, 0.0, 64), np.ones(64), "s/9")
 
     assert [t.label for t in canvas.traces] == ["s/0", "s/1", "s/9"]
+
+
+class _ReversedCompletionReader(FakeReader):
+    """Makes the FIRST-dropped path finish LAST, deterministically.
+
+    Reproduces out-of-order loading without racing threads, so the result
+    does not depend on machine speed. That dependence is exactly how the
+    label bug hid for two releases: green on Linux, red on a faster Mac.
+    """
+
+    def read_1d(self, path, procno=1):
+        if str(path).endswith("/a"):
+            time.sleep(0.3)
+        return super().read_1d(path, procno)
+
+
+def test_label_column_renumbers_when_a_trace_is_inserted_ahead(qtbot):
+    """Out-of-order loading must not put two labels in the same slot.
+
+    Auto label positions are cached on first draw from the then-current
+    index. When the second-dropped spectrum loads first it is drawn alone at
+    index 0 and takes 0.985; the first-dropped one then arrives and is
+    correctly inserted AHEAD of it -- and used to take 0.985 as well, so two
+    names landed on top of each other.
+    """
+    canvas = SpectrumCanvas(reader=_ReversedCompletionReader())
+    canvas.handle_mime_data(
+        mime_for(item(path="/d/a", label="first"), item(path="/d/b", label="second"))
+    )
+    qtbot.waitUntil(lambda: len(canvas.traces) == 2, timeout=5000)
+    canvas._redraw()
+
+    assert [t.label for t in canvas.traces] == ["first", "second"]
+    positions = [t.label_pos for t in canvas.traces]
+    assert all(p is not None for p in positions)
+    assert positions[0][1] > positions[1][1], "two labels share one slot"
+
+
+def test_a_dragged_label_survives_a_later_insertion(qtbot):
+    """Renumbering must only touch positions the user has not chosen.
+
+    Both spectra are dropped TOGETHER so that the late-completing one is
+    genuinely inserted ahead of the other -- dropping them separately just
+    appends, which never exercises the renumbering path.
+    """
+    canvas = SpectrumCanvas(reader=_ReversedCompletionReader())
+    canvas.handle_mime_data(mime_for(item(path="/d/b", label="second")))
+    qtbot.waitUntil(lambda: len(canvas.traces) == 1, timeout=5000)
+    canvas._redraw()
+    # Stand in for a drag: clear the cached position, set an offset, redraw.
+    canvas.traces[0].label_pos = None
+    canvas.traces[0].label_offset = (0.2, -0.3)
+    canvas._redraw()
+    moved = canvas.traces[0].label_pos
+    assert moved is not None
+
+    canvas.handle_mime_data(mime_for(item(path="/d/a", label="first")))
+    qtbot.waitUntil(lambda: len(canvas.traces) == 2, timeout=5000)
+    canvas._redraw()
+    dragged = next(t for t in canvas.traces if t.label == "second")
+    assert dragged.label_pos == moved

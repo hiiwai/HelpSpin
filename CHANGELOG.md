@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.6.3 - 2026-09-06
+
+### Fixed: CEST panel read one row instead of the whole series
+
+nmrglue 0.11 and earlier hand back a pseudo-2D `ser` FLAT -- one long 1-D
+array rather than (rows, points) -- while 0.12 shapes it correctly. The
+reader's `np.atleast_2d` turned that into a single enormous row, so the
+panel reported "1 rows from ser", drew an empty plot, and only complained
+when Build Z-spectrum was pressed. A flat array is now reshaped using TD(F1),
+and one that does not divide evenly is refused rather than guessed at, with
+truncation or an incomplete download named as the likely cause. The row
+count is checked at LOAD time, so a mismatch appears in the notes box
+immediately.
+
+The dependency floor is raised to `nmrglue>=0.12` accordingly, though the
+reshape means 0.11 now works too.
+
+### Fixed: the CEST panel kept the application alive after Quit
+
+The panel was created parentless, so it was a second top-level window --
+and Qt exits when the LAST window closes. Quit left the process running with
+no main window to quit from. It is now parented to the main window with the
+Window flag, so it keeps its own title bar but cannot outlive its parent,
+and `closeEvent` closes it explicitly. This is the same trap the detached
+explorer fell into in an earlier release; the fix follows the same pattern.
+
+### Fixed: two labels could land in the same slot
+
+Automatic label positions are cached on first draw from the then-current
+index. When a spectrum dropped second finished loading first, it was drawn
+alone at index 0 and took the top slot; the first-dropped one then arrived,
+was correctly inserted ahead of it, and took the top slot as well. Inserting
+a trace ahead of others now clears the cached positions below it so the
+column renumbers. Labels the user has dragged, and positions restored from a
+session, are left alone.
+
+### Fixed: a test fixture that depended on thread scheduling
+
+`DifferentLengthReader` decided which spectrum carried the unique peak from
+a call counter rather than the path. The canvas loads concurrently, so the
+answer depended on which thread won -- the same commit passed on one machine
+and failed on another with a sign-flipped result. Now keyed on the path.
+
+Both label and subtract regressions are covered by tests that force reversed
+completion deterministically rather than racing threads, since machine-speed
+dependence is precisely how these hid for two releases.
+
+1050 tests (up from 1045), passing under nmrglue 0.11 and 0.12.
+
+
 ## 0.6.2 - 2026-09-04
 
 ### Finding a second dip

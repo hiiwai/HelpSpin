@@ -154,7 +154,7 @@ def _ppm_axis(procs: dict, acqus: dict, size: int) -> np.ndarray:
     return offset - np.arange(size, dtype=np.float64) * (sw_hz / sf) / size
 
 
-def _process_ser(expno: Path, acqus: dict, procs: dict):
+def _process_ser(expno: Path, acqus: dict, procs: dict, expected_rows: int = 0):
     """FT the raw serial file the way TopSpin's xf2 would.
 
     The phase convention is the fiddly part and was determined by measurement
@@ -164,10 +164,35 @@ def _process_ser(expno: Path, acqus: dict, procs: dict):
     combinations give +0.24, +0.66 and -0.32, and one of them (-0.9957) is
     the right curve inverted, which would flip a Z-spectrum upside down
     while looking entirely plausible.
+
+    nmrglue 0.11 and earlier hand back a pseudo-2D ser FLAT -- one long 1-D
+    array rather than (rows, points) -- while 0.12 shapes it correctly. Left
+    alone, np.atleast_2d turns that into a single enormous row, and the panel
+    reports "1 rows from ser" and plots nothing. So a 1-D result is reshaped
+    here using TD(F1), which is what nmrglue would have used, and anything
+    that does not divide evenly is refused rather than guessed at.
     """
     ng = _ng()
     dic, data = ng.bruker.read(str(expno))
-    data = np.atleast_2d(np.asarray(data))
+    data = np.asarray(data)
+
+    if data.ndim == 1:
+        rows = expected_rows or int(float((dic.get("acqu2s") or {}).get("TD", 0) or 0))
+        if rows > 1 and data.size % rows == 0:
+            data = data.reshape(rows, data.size // rows)
+        elif rows > 1:
+            raise CestError(
+                f"{expno.name}: ser holds {data.size} points, which does not "
+                f"divide into {rows} rows. The file may be truncated or still "
+                f"downloading."
+            )
+        else:
+            raise CestError(
+                f"{expno.name}: ser was read as one flat array and TD(F1) is "
+                f"unknown, so it cannot be split into rows. Upgrade nmrglue "
+                f"to 0.12 or later."
+            )
+    data = np.atleast_2d(data)
     if data.ndim != 2:                                    # pragma: no cover
         raise CestError(f"expected a pseudo-2D ser at {expno}, got {data.ndim}D")
 
@@ -317,12 +342,20 @@ def load_pseudo_2d(
             rows, source = rows_2rr, "2rr"
             notes.append("no ser file; fell back to processed data")
         else:
-            rows, source = _process_ser(expno, acqus, procs), "ser"
+            rows = _process_ser(expno, acqus, procs, expected)
+            source = "ser"
     else:
         rows, source = rows_2rr, "2rr"
 
     if rows is None or rows.size == 0:                    # pragma: no cover
         raise CestError(f"no usable data in {expno}")
+
+    if expected and rows.shape[0] != expected and source == "ser":
+        notes.append(
+            f"ser gave {rows.shape[0]} row(s) but {expected} were expected -- "
+            f"the file may be incomplete, or nmrglue may be too old to shape "
+            f"a pseudo-2D ser (0.12 or later is required)"
+        )
 
     ppm = _ppm_axis(procs, acqus, rows.shape[1])
     return PseudoTwoD(

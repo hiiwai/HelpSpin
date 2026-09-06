@@ -1266,6 +1266,22 @@ class SpectrumCanvas(QWidget):
                 index = i
                 break
         self._traces.insert(index, trace)
+        if index < len(self._traces) - 1:
+            # This trace went AHEAD of traces that are already on screen, so
+            # the column numbering below it is now wrong. Auto-assigned label
+            # positions are cached on first draw from the then-current index;
+            # without clearing them, a trace drawn alone at index 0 keeps
+            # 0.985 and the trace inserted before it takes 0.985 too, so two
+            # names land on top of each other. Only positions the user has
+            # not touched are cleared -- a dragged or session-restored label
+            # carries a label_offset and must stay exactly where it was put.
+            for existing in self._traces[index + 1:]:
+                if (
+                    getattr(existing, "label_base_pos", None) is not None
+                    and getattr(existing, "label_offset", (0.0, 0.0)) == (0.0, 0.0)
+                ):
+                    existing.label_pos = None
+                    existing.label_base_pos = None
         return index
 
     def _slot_for(self, position: int) -> dict:

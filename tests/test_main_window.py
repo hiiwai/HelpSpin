@@ -296,3 +296,27 @@ def test_load_failure_is_reported_not_silent(qtbot):
     qtbot.addWidget(window)
     window._on_load_failed("/data/sample/99", "no pdata/1")
     assert "99" in window.statusBar().currentMessage()
+
+
+def test_cest_panel_is_parented_and_closes_with_the_window(qtbot, tmp_path, monkeypatch):
+    """A parentless second top-level window keeps the process alive on Quit.
+
+    Qt exits when the LAST window closes, so an unparented CEST panel left
+    the application running with no main window to quit from -- the same trap
+    the detached explorer fell into.
+    """
+    from helspin.__main__ import MainWindow
+
+    monkeypatch.setattr("helspin.__main__.load_data_roots", lambda: [])
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window._show_cest()
+
+    panel = window._cest_panel
+    assert panel is not None
+    assert panel.parent() is window          # not a free-floating top level
+    assert panel.isWindow()                  # but still its own window
+
+    window.close()
+    assert window._cest_panel is None
+    assert not panel.isVisible()

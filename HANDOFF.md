@@ -652,3 +652,28 @@ against a pdata whose row count matches TD.
 
 Also: report the calibration correction `(nominal/fitted)^2` separately from
 any target-field change. Only the former transfers between experiments.
+
+## CEST panel window ownership (0.6.3)
+
+The panel MUST stay parented to the main window. Created parentless it is a
+second top-level window, and Qt exits only when the last window closes -- so
+Quit leaves the process running with no main window to quit from. Same trap
+as the detached explorer. Parent it and set the Window flag; do not
+"simplify" to `CestPanel()`.
+
+## Reading a pseudo-2D ser (0.6.3)
+
+nmrglue <= 0.11 returns it flat; 0.12 shapes it. `np.atleast_2d` on a flat
+array silently yields ONE row and an empty plot rather than an error. The
+reader reshapes using TD(F1) and refuses anything that does not divide
+evenly. Do not remove that branch even though the floor is now 0.12 -- users
+run whatever their environment has, and this failed on a second machine
+after working on the first.
+
+## Concurrency in canvas tests (0.6.3)
+
+Loads run in a thread pool. Any fixture keyed on call ORDER rather than on
+the path will pass on one machine and fail on another. Two tests did exactly
+that for two releases. When a test needs out-of-order completion, force it
+with a per-path delay rather than hoping the scheduler obliges.
+

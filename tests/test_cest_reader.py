@@ -144,3 +144,39 @@ def test_row_offset_mismatch_is_never_silently_padded(truncated):
     assert intensity.size != offsets.size
     with pytest.raises(CestError):
         normalise_z(intensity, offsets, sfo1_mhz=data.sfo1_mhz)
+
+
+def test_flat_ser_is_reshaped_not_collapsed_to_one_row(exact, monkeypatch):
+    """nmrglue 0.11 returns a pseudo-2D ser FLAT; 0.12 shapes it.
+
+    Left alone, np.atleast_2d turns a flat array into one enormous row and
+    the panel reports "1 rows from ser" and plots nothing -- observed on a
+    real machine running 0.11. TD(F1) is enough to split it correctly.
+    """
+    import nmrglue as ng
+
+    real_read = ng.bruker.read
+
+    def flat_read(path, *args, **kwargs):
+        dic, data = real_read(path, *args, **kwargs)
+        return dic, np.asarray(data).reshape(-1)      # pretend to be 0.11
+
+    monkeypatch.setattr(ng.bruker, "read", flat_read)
+    data = load_pseudo_2d(exact, prefer="ser")
+    assert data.n_rows == N
+    assert data.rows.shape[1] > 1
+
+
+def test_flat_ser_that_does_not_divide_is_refused(exact, monkeypatch):
+    """A truncated or still-downloading file must not be reshaped by guess."""
+    import nmrglue as ng
+
+    real_read = ng.bruker.read
+
+    def ragged_read(path, *args, **kwargs):
+        dic, data = real_read(path, *args, **kwargs)
+        return dic, np.asarray(data).reshape(-1)[:-3]   # not divisible by TD
+
+    monkeypatch.setattr(ng.bruker, "read", ragged_read)
+    with pytest.raises(CestError, match="does not divide"):
+        load_pseudo_2d(exact, prefer="ser")

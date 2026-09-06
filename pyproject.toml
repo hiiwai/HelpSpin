@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "helspin"
-version = "0.6.2"
+version = "0.6.3"
 description = "Compare Bruker NMR spectra and build publication figures"
 requires-python = ">=3.11"
 authors = [{ name = "H. Iw-ai" }]
@@ -18,7 +18,9 @@ dependencies = [
                          # README "Bugs the tests caught" and re-check this
                          # ceiling when nmrglue publishes a fix.
     "scipy>=1.11",       # pulled in by nmrglue; used for 2D interpolation
-    "nmrglue>=0.10",     # New BSD
+    "nmrglue>=0.12",     # New BSD. 0.11 and earlier return a pseudo-2D ser
+                         # FLAT rather than (rows, points), which silently
+                         # collapses a CEST series to one row.
     "python-pptx>=0.6",  # PowerPoint export (MIT). Optional at runtime: the
                          # export path reports a clear error if it is absent,
                          # so the app still runs without it.

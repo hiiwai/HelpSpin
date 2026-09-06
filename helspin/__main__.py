@@ -379,7 +379,14 @@ class MainWindow(QMainWindow):
 
         panel = getattr(self, "_cest_panel", None)
         if panel is None:
-            panel = CestPanel()
+            # Parented to the main window, with the Window flag so it still
+            # gets its own title bar and task-bar entry. A PARENTLESS
+            # top-level would keep the process alive after Quit -- Qt exits
+            # when the last window closes, and the panel would be a second
+            # one with no main window left to quit from. That is the same
+            # trap the detached explorer fell into; see closeEvent.
+            panel = CestPanel(self)
+            panel.setWindowFlag(Qt.Window, True)
             self._cest_panel = panel
         selected = self._selected_expnos()
         if len(selected) == 1:
@@ -568,6 +575,13 @@ class MainWindow(QMainWindow):
         try:
             if self._explorer_window is not None:
                 self._attach_browser()
+            panel = getattr(self, "_cest_panel", None)
+            if panel is not None:
+                # Belt and braces: parenting alone destroys it, but closing
+                # first means its own close handling runs while the object
+                # graph is still intact rather than during teardown.
+                panel.close()
+                self._cest_panel = None
             self._browser.shutdown()
         finally:
             super().closeEvent(event)
