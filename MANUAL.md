@@ -340,6 +340,11 @@ The panel handles both Waudby-lab pseudo-2D experiments and picks the tab
 from PULPROG: `19f_calib_nut` opens the calibration tab, `19f_cest` the
 Z-spectrum tab.
 
+**Show fitted curves** (in the header) hides the fitted lines on both tabs
+and leaves the measured points, residuals and reported numbers. Useful for
+judging a marginal dip against the data rather than against the model drawn
+through it.
+
 ### Which data it reads
 
 **Raw `ser` by default.** `xf2` stores SI(F1) rows, and TopSpin defaults SI

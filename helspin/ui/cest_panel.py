@@ -166,7 +166,10 @@ class CestPanel(QWidget):
         self._data = None
         self._offsets = None
         self._fit = None
+        self._n_series = None
         self._z = None
+        self._z_fitted = None
+        self._z_display = None
         # Kept Z-spectra, each already normalised to ITS OWN I0 so that
         # experiments with different receiver gain, scan count or
         # concentration are still comparable on one axis. Storing the
@@ -186,11 +189,25 @@ class CestPanel(QWidget):
         reload_button = QPushButton("Reload")
         reload_button.clicked.connect(self._reload)
 
+        # One setting for both tabs. A fit you have hidden on one plot you
+        # almost always want hidden on the other -- the reason to hide it is
+        # to look at the measured points, and that intent does not change
+        # between the nutation and the Z-spectrum.
+        self._show_fits = QCheckBox("Show fitted curves")
+        self._show_fits.setChecked(True)
+        self._show_fits.setToolTip(
+            "Hides the fitted lines on both tabs and leaves the measured\n"
+            "points. The fit still runs and the numbers are still reported;\n"
+            "only the drawn curve goes."
+        )
+        self._show_fits.toggled.connect(self._refresh_plots)
+
         header = QHBoxLayout()
         header.addWidget(open_button)
         header.addWidget(reload_button)
         header.addWidget(QLabel("Source:"))
         header.addWidget(self._source, 1)
+        header.addWidget(self._show_fits)
 
         self._notes = QPlainTextEdit()
         self._notes.setReadOnly(True)
@@ -466,6 +483,20 @@ class CestPanel(QWidget):
         page_layout.addWidget(split)
         return page
 
+    def _refresh_plots(self) -> None:
+        """Redraw both tabs from the LAST fit rather than refitting.
+
+        Toggling visibility must not re-run a fit: on a 32-row nutation the
+        global grid search is not free, and repeating it could in principle
+        report a different number for a plot the user only meant to look at
+        differently.
+        """
+        if self._fit is not None and getattr(self, "_n_series", None) is not None:
+            t, y = self._n_series
+            self._draw_nutation(t, y, self._fit)
+        if self._z_display is not None:
+            self._draw_z(self._z_display, self._z_fitted)
+
     def _span_text(self, centre: float, half: float) -> str:
         """The window a centre and half-width actually produce.
 
@@ -606,6 +637,7 @@ class CestPanel(QWidget):
             return
 
         self._fit = fit
+        self._n_series = (t, y)
         target = self._n_target.value()
         lines = [
             f"B1 (fitted)     {fit.field_hz:.2f}"
@@ -700,14 +732,15 @@ class CestPanel(QWidget):
         plot.clear()
         axes, residual_axes = plot.axes, plot.residual_axes
         axes.plot(t * 1e3, y, "o", ms=4, color="#1b6ca8", label="measured")
-        dense = np.linspace(float(t[0]), float(t[-1]), 600)
-        axes.plot(
-            dense * 1e3,
-            nutation_model(dense, fit.offset, fit.amplitude, fit.field_hz,
-                           fit.phase_rad, fit.t2_s),
-            "-", color="#d1495b", lw=1.5,
-            label=("damped sine" if fit.damped else "plain sine"),
-        )
+        if self._show_fits.isChecked():
+            dense = np.linspace(float(t[0]), float(t[-1]), 600)
+            axes.plot(
+                dense * 1e3,
+                nutation_model(dense, fit.offset, fit.amplitude, fit.field_hz,
+                               fit.phase_rad, fit.t2_s),
+                "-", color="#d1495b", lw=1.5,
+                label=("damped sine" if fit.damped else "plain sine"),
+            )
         axes.axhline(0.0, color="k", lw=0.5)
         axes.set_ylabel("signal (a.u.)")
         axes.set_title(
@@ -958,8 +991,10 @@ class CestPanel(QWidget):
                           "construction."]
 
         self._z_result.setPlainText("\n".join(lines))
+        self._z_display = display
+        self._z_fitted = None if display is not z else fitted
         self._seed_z_limits(display)
-        self._draw_z(display, None if display is not z else fitted)
+        self._draw_z(display, self._z_fitted)
 
     def _draw_z(self, z, fitted) -> None:
         from ..domain.cest import lorentzian_dip
@@ -997,7 +1032,7 @@ class CestPanel(QWidget):
         if z.reference_mask.any():
             axes.plot(x[z.reference_mask], z.intensity[z.reference_mask], "s",
                       ms=6, color="#e0a458", label="I$_0$ reference")
-        if fitted is not None:
+        if fitted is not None and self._show_fits.isChecked():
             dense = np.linspace(float(x[interior].min()), float(x[interior].max()), 500)
             centre = fitted.centre_ppm if use_ppm else fitted.centre_hz
             width = fitted.width_ppm if use_ppm else fitted.width_hz

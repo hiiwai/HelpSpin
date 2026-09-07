@@ -534,3 +534,74 @@ def test_double_click_resets_the_view(panel, tmp_path):
     event.dblclick = True
     panel._on_z_click(event)
     assert axes.get_xlim() == pytest.approx(full)
+
+
+FIT_LABELS = {"damped sine", "plain sine", "Lorentzian dip"}
+
+
+def _fit_curves(axes):
+    """Fitted curves only.
+
+    Matched on label rather than on style: the zero reference drawn by
+    axhline is also a solid, markerless Line2D, and counting it made this
+    look like the toggle had failed.
+    """
+    return [line for line in axes.get_lines() if line.get_label() in FIT_LABELS]
+
+
+def test_hiding_fits_keeps_the_z_spectrum_points_and_numbers(panel, tmp_path):
+    """The point of the toggle is to see the DATA, not to stop analysing."""
+    _built(panel, tmp_path, "hidez")
+    reported = panel._z_result.toPlainText()
+
+    panel._show_fits.setChecked(False)
+    labels = [line.get_label() for line in panel._z_plot.axes.get_lines()]
+    assert "Lorentzian dip" not in labels
+    assert panel._z_plot.axes.get_lines(), "data points were removed too"
+    # Hiding a curve must not change what was measured.
+    assert panel._z_result.toPlainText() == reported
+
+
+def test_hiding_fits_applies_to_the_nutation_tab_too(panel, tmp_path):
+    """One shared setting: hidden on one plot means hidden on both."""
+    root = make_dataset(tmp_path / "hiden", n_rows=16, si_f1=16,
+                        pulprog="19f_calib_nut.iw", offsets=None)
+    panel.load(root)
+    panel._n_half.setValue(0.5)
+    panel._fit_nutation()
+    assert len(_fit_curves(panel._n_plot.axes)) >= 1
+
+    panel._show_fits.setChecked(False)
+    assert _fit_curves(panel._n_plot.axes) == []
+    # Measured points and the residual strip are diagnostics of their own.
+    assert panel._n_plot.axes.get_lines()
+    assert panel._n_plot.residual_axes.get_lines()
+
+
+def test_toggling_fits_does_not_refit(panel, tmp_path):
+    """Redrawing must reuse the last fit, not run the grid search again."""
+    root = make_dataset(tmp_path / "norefit", n_rows=16, si_f1=16,
+                        pulprog="19f_calib_nut.iw", offsets=None)
+    panel.load(root)
+    panel._n_half.setValue(0.5)
+    panel._fit_nutation()
+    before = panel._fit
+
+    panel._show_fits.setChecked(False)
+    panel._show_fits.setChecked(True)
+    assert panel._fit is before, "toggling re-ran the fit"
+
+
+def test_toggling_fits_preserves_the_zoom(panel, tmp_path):
+    _built(panel, tmp_path, "zoomkeep")
+    panel._z_xmin.setValue(-2000.0)
+    panel._z_xmax.setValue(2000.0)
+    before = panel._z_plot.axes.get_xlim()
+    panel._show_fits.setChecked(False)
+    assert panel._z_plot.axes.get_xlim() == pytest.approx(before)
+
+
+def test_toggling_before_any_fit_is_harmless(panel):
+    panel._show_fits.setChecked(False)
+    panel._show_fits.setChecked(True)
+    assert panel._fit is None

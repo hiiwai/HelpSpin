@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.1 - 2026-09-07
+
+### Show or hide fitted curves
+
+A **Show fitted curves** checkbox in the header, applying to both tabs. It
+hides the drawn curve -- the nutation sine and the Lorentzian dip -- and
+leaves the measured points, the residual strip and every reported number
+untouched. The fit still runs; only the line goes.
+
+One shared setting rather than one per tab, because the reason to hide a fit
+is to look at the data, and that intent does not change between the two.
+
+Toggling redraws from the LAST fit instead of refitting: on a 32-row
+nutation the global grid search is not free, and repeating it could report a
+different number for a plot the user only meant to view differently. The
+current zoom survives the toggle.
+
+1075 tests (up from 1070).
+
+
 ## 0.7.0 - 2026-09-06
 
 ### Overlay several Z-spectra
