@@ -9,6 +9,7 @@ so construction and showing must stay separate.
 from __future__ import annotations
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from helspin.ui.cest_panel import CestPanel
@@ -605,3 +606,65 @@ def test_toggling_before_any_fit_is_harmless(panel):
     panel._show_fits.setChecked(False)
     panel._show_fits.setChecked(True)
     assert panel._fit is None
+
+
+def test_peak_list_marks_and_ticks_the_main_peak(panel, tmp_path):
+    """The spin box rounds to 4 decimals, so exact equality never matched.
+
+    Without a tolerance the main peak was never flagged and never ticked.
+    """
+    _built(panel, tmp_path, "peaks")
+    assert panel._peak_list.count() >= 1
+    main = panel._peak_list.item(0)
+    assert main.checkState() == Qt.Checked
+    assert main.text().startswith("MAIN")
+    assert main.data(Qt.UserRole) == pytest.approx(
+        panel._z_centre.value(), abs=1e-4
+    )
+
+
+def test_carrier_is_reported_and_differs_from_the_peak(panel, tmp_path):
+    _built(panel, tmp_path, "carrier")
+    assert "carrier at" in panel._notes.toPlainText()
+    assert panel._carrier_ppm != 0.0
+
+
+def test_lowering_the_detection_threshold_relists_peaks(panel, tmp_path):
+    _built(panel, tmp_path, "thresh")
+    strict = panel._peak_list.count()
+    panel._peak_snr.setValue(2.0)
+    assert panel._peak_list.count() >= strict
+
+
+def test_ticking_a_second_peak_adds_a_curve(panel, tmp_path):
+    _built(panel, tmp_path, "second")
+    panel._peak_snr.setValue(2.0)
+    panel._build_z()
+    if panel._peak_list.count() < 2:
+        pytest.skip("synthetic spectrum has only one resonance")
+    panel._peak_list.item(1).setCheckState(Qt.Checked)
+    assert len(panel._peak_curves) == 1
+    assert "ppm" in panel._peak_curves[0][0]
+
+
+def test_double_click_promotes_a_peak_to_main(panel, tmp_path):
+    _built(panel, tmp_path, "promote")
+    panel._peak_snr.setValue(2.0)
+    if panel._peak_list.count() < 2:
+        pytest.skip("synthetic spectrum has only one resonance")
+    target = panel._peak_list.item(1).data(Qt.UserRole)
+    panel._make_peak_main(panel._peak_list.item(1))
+    assert panel._z_centre.value() == pytest.approx(target, abs=1e-4)
+    assert panel._peak_list.item(0).text().startswith("MAIN") or any(
+        panel._peak_list.item(i).text().startswith("MAIN")
+        for i in range(panel._peak_list.count())
+    )
+
+
+def test_peak_centre_remains_freely_editable(panel, tmp_path):
+    """Nothing forces the centre onto a detected peak or onto the carrier."""
+    _built(panel, tmp_path, "manual")
+    panel._z_centre.setValue(-7.5)
+    panel._build_z()
+    assert panel._z_centre.value() == pytest.approx(-7.5)
+    assert panel._z is not None

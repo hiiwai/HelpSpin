@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.8.0 - 2026-09-08
+
+### Multiple peaks
+
+**Find peak** now selects the resonance nearest the CARRIER rather than the
+tallest one. The carrier is what FQ1LIST offsets are measured from, so the
+peak beside it is the one the experiment is about; picking the tallest would
+silently choose a different resonance on a sample where an impurity or
+reference is stronger than the analyte. The carrier position is reported in
+the notes -- it is not the same as the observed peak, and on real 19F data
+the two were 0.137 ppm apart, which is why the direct-saturation dip sat at
++78 Hz rather than zero.
+
+A **peak list** shows every resonance found, with its offset from the
+carrier and its height. The main peak is marked and always measured; tick
+others to build a Z-spectrum for each, drawn dashed on the same axes and
+normalised to its own I0 so a weak resonance stays comparable with a strong
+one. Double-click promotes a peak to main. **Peak centre** remains freely
+editable, so a resonance the detector missed can still be measured by typing
+its position.
+
+Detection is driven by noise, not by a fraction of the tallest peak. A
+fraction alone fails when one resonance dominates: 5% of the main peak still
+sat above the baseline ripple and returned 94 "peaks", and picking the one
+nearest the carrier then chose noise at -116.804 ppm instead of the true
+resonance at -116.663. The threshold is adjustable, because there is no
+universal value -- on the same sample the main peak was 55x noise and a
+plausible second resonance only 6x -- and the list is capped so that too low
+a setting cannot fill it with ripple.
+
+### Fixed
+
+- Peak detection ran on row 0, which is only unsaturated when the frequency
+  list happens to START with a remote offset. A list beginning at -1800 Hz
+  would have had its first row partly saturated, and detection would then
+  have run on a suppressed spectrum. It now uses the row with the most total
+  signal.
+- The notes box was filled before peak detection appended to it, so the
+  carrier line never appeared.
+- The main peak was never flagged or ticked: the spin box stores four
+  decimals, so a peak read straight from the spectrum never compared equal
+  to it. Matched within the box's precision now.
+
+1088 tests (up from 1075).
+
+
 ## 0.7.1 - 2026-09-07
 
 ### Show or hide fitted curves

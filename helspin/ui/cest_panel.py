@@ -46,11 +46,14 @@ from PySide6.QtWidgets import (
 
 from ..domain.cest import (
     CestError,
+    carrier_ppm,
     choose_nutation_model,
     corrected_power,
     dip_candidates,
     find_peak_ppm,
+    find_peaks_ppm,
     measure_rows,
+    nearest_peak_ppm,
     normalise_z,
     power_ratio_db,
     remove_dip,
@@ -170,6 +173,9 @@ class CestPanel(QWidget):
         self._z = None
         self._z_fitted = None
         self._z_display = None
+        self._peaks: list[tuple[float, float]] = []
+        self._carrier_ppm = 0.0
+        self._peak_curves: list[tuple[str, object]] = []
         # Kept Z-spectra, each already normalised to ITS OWN I0 so that
         # experiments with different receiver gain, scan count or
         # concentration are still comparable on one axis. Storing the
@@ -429,6 +435,29 @@ class CestPanel(QWidget):
         form.addRow("Y range", zoom_y)
         form.addRow("", self._z_full)
 
+        self._peak_snr = QDoubleSpinBox()
+        self._peak_snr.setRange(2.0, 200.0)
+        self._peak_snr.setDecimals(1)
+        self._peak_snr.setValue(8.0)
+        self._peak_snr.setPrefix("detect above ")
+        self._peak_snr.setSuffix(" x noise")
+        self._peak_snr.setToolTip(
+            "Lower this to list weaker resonances. There is no universal\n"
+            "value: on one 19F sample the main peak was 55x noise and a\n"
+            "genuine second resonance only 6x."
+        )
+        self._peak_snr.valueChanged.connect(self._detect_peaks)
+
+        self._peak_list = QListWidget()
+        self._peak_list.setMaximumHeight(110)
+        self._peak_list.setToolTip(
+            "Resonances found in the least-saturated row. The MAIN peak is\n"
+            "the one nearest the carrier and is always measured; tick others\n"
+            "to build a Z-spectrum for them as well."
+        )
+        self._peak_list.itemChanged.connect(self._on_peak_toggled)
+        self._peak_list.itemDoubleClicked.connect(self._make_peak_main)
+
         self._overlay_list = QListWidget()
         self._overlay_list.setMaximumHeight(96)
         self._overlay_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -578,9 +607,26 @@ class CestPanel(QWidget):
             f"PULPROG {str(data.acqus.get('PULPROG', '?')).strip('<>')} "
             f"({kind})"
         )
-        self._notes.setPlainText("\n".join(notes) if notes else "No warnings.")
-
+        try:
+            self._carrier_ppm = carrier_ppm(
+                data.sfo1_mhz, float(data.procs.get("SF", 0.0) or 0.0)
+            )
+        except CestError:
+            self._carrier_ppm = 0.0
         centre = find_peak_ppm(data.rows[0], data.ppm)
+        if kind == "cest":
+            peaks = find_peaks_ppm(
+                data.rows[int(np.argmax(np.abs(data.rows).sum(axis=1)))], data.ppm,
+                min_snr=self._peak_snr.value(),
+            )
+            nearest = nearest_peak_ppm(peaks, self._carrier_ppm)
+            if nearest is not None:
+                centre = nearest
+            notes.append(
+                f"carrier at {self._carrier_ppm:.4f} ppm; {len(peaks)} "
+                f"resonance(s) found, main peak {centre:+.4f} ppm "
+                f"({centre - self._carrier_ppm:+.3f} from carrier)"
+            )
         if kind == "nutation":
             strongest = int(np.argmax(np.abs(data.rows).sum(axis=1)))
             centre = find_peak_ppm(data.rows[strongest], data.ppm)
@@ -588,8 +634,12 @@ class CestPanel(QWidget):
             nominal = nominal_nutation_field(data)
             if nominal > 0:
                 self._n_target.setValue(nominal)
+        self._notes.setPlainText("\n".join(notes) if notes else "No warnings.")
         self._n_centre.setValue(centre)
         self._z_centre.setValue(centre)
+        self._detect_peaks()
+        self._update_z_span()
+        self._update_n_span()
         self._tabs.setCurrentIndex(0 if kind == "nutation" else 1)
 
     # ------------------------------------------------------------- nutation
@@ -763,10 +813,109 @@ class CestPanel(QWidget):
 
     # ------------------------------------------------------------ Z-spectrum
 
+    def _reference_row(self):
+        """The least-saturated row, for locating peaks.
+
+        The row with the most total signal rather than row 0. Row 0 is only
+        unsaturated when the frequency list happens to START with a remote
+        offset -- yours does, but a list beginning at -1800 Hz would have its
+        first row partly saturated, and peak detection would then run on a
+        suppressed spectrum and could miss the very resonance being measured.
+        """
+        return self._data.rows[int(np.argmax(np.abs(self._data.rows).sum(axis=1)))]
+
+    def _detect_peaks(self) -> None:
+        """Find resonances and list them, main peak first and always ticked."""
+        self._peak_list.blockSignals(True)
+        self._peak_list.clear()
+        self._peaks = []
+        if self._data is None:
+            self._peak_list.blockSignals(False)
+            return
+        try:
+            self._peaks = find_peaks_ppm(
+                self._reference_row(), self._data.ppm,
+                min_snr=self._peak_snr.value(),
+            )
+            if len(self._peaks) >= 20:
+                self._peak_snr.setToolTip(
+                    "At this threshold the list is full and is probably\n"
+                    "showing baseline ripple. Raise it until only real\n"
+                    "resonances remain."
+                )
+        except CestError:
+            self._peaks = []
+
+        # The spin box stores 4 decimals, so a peak read straight from the
+        # spectrum never compares equal to it. Match within half a step of
+        # that precision instead of exactly, or the main peak is never
+        # flagged and never ticked.
+        main = self._z_centre.value()
+        tolerance = 10 ** -self._z_centre.decimals() / 2 + 1e-12
+        for ppm, height in self._peaks:
+            item = QListWidgetItem(
+                f"{ppm:+.4f} ppm   {ppm - self._carrier_ppm:+.3f} from carrier"
+                f"   h={height:.3g}"
+            )
+            item.setData(Qt.UserRole, ppm)
+            is_main = abs(ppm - main) <= tolerance
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if is_main else Qt.Unchecked)
+            if is_main:
+                item.setText("MAIN  " + item.text())
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+            self._peak_list.addItem(item)
+        self._peak_list.blockSignals(False)
+
+    def _on_peak_toggled(self, item) -> None:
+        """Rebuild so a newly ticked peak appears straight away."""
+        if self._z is not None:
+            self._build_z()
+
+    def _make_peak_main(self, item) -> None:
+        """Double-click promotes a peak to the one that is analysed."""
+        ppm = item.data(Qt.UserRole)
+        if ppm is None:
+            return
+        self._z_centre.setValue(float(ppm))
+        self._detect_peaks()
+        self._build_z()
+
+    def _checked_peaks(self) -> list[float]:
+        """Ticked peaks other than the main one."""
+        main = self._z_centre.value()
+        found = []
+        for row in range(self._peak_list.count()):
+            item = self._peak_list.item(row)
+            ppm = item.data(Qt.UserRole)
+            if (
+                item.checkState() == Qt.Checked
+                and ppm is not None
+                and abs(float(ppm) - main) > 10 ** -self._z_centre.decimals()
+            ):
+                found.append(float(ppm))
+        return found
+
     def _pick_z_peak(self) -> None:
+        """Select the peak nearest the CARRIER, not the tallest.
+
+        The carrier is where the saturation offsets are measured from, so the
+        resonance beside it is the one the experiment is about. Picking the
+        tallest instead would silently choose a different resonance on a
+        sample where an impurity or reference is stronger than the analyte.
+        """
         if self._data is None:
             return
-        self._z_centre.setValue(find_peak_ppm(self._data.rows[0], self._data.ppm))
+        peaks = find_peaks_ppm(
+            self._reference_row(), self._data.ppm, min_snr=self._peak_snr.value()
+        )
+        nearest = nearest_peak_ppm(peaks, self._carrier_ppm)
+        if nearest is None:
+            nearest = find_peak_ppm(self._reference_row(), self._data.ppm)
+        self._z_centre.setValue(nearest)
+        self._detect_peaks()
 
     def _build_z(self) -> None:
         if self._data is None:
@@ -991,6 +1140,21 @@ class CestPanel(QWidget):
                           "construction."]
 
         self._z_result.setPlainText("\n".join(lines))
+        # Ticked peaks get their own Z-spectrum on the same axes. Each is
+        # normalised to ITS OWN I0, so a weak resonance is comparable with a
+        # strong one instead of being flattened against it.
+        self._peak_curves = []
+        for extra in self._checked_peaks():
+            try:
+                values = measure_rows(rows, data.ppm, extra, half, mode=mode)
+                curve = normalise_z(
+                    values, offsets, sfo1_mhz=data.sfo1_mhz,
+                    reference_min_hz=threshold,
+                )
+            except CestError:
+                continue
+            self._peak_curves.append((f"peak {extra:+.4f} ppm", curve))
+
         self._z_display = display
         self._z_fitted = None if display is not z else fitted
         self._seed_z_limits(display)
@@ -1018,7 +1182,21 @@ class CestPanel(QWidget):
                 label=name,
             )
 
-        current_label = "current" if self._overlays else "I/I$_0$"
+        for index, (name, curve) in enumerate(self._peak_curves):
+            cx = curve.offsets_ppm if use_ppm else curve.offsets_hz
+            inner = ~curve.reference_mask
+            axes.plot(
+                cx[inner], curve.intensity[inner], "--", lw=1.0, alpha=0.85,
+                color=OVERLAY_COLOURS[
+                    (index + len(self._overlays)) % len(OVERLAY_COLOURS)
+                ],
+                label=name,
+            )
+
+        current_label = (
+            f"main {self._z_centre.value():+.4f} ppm"
+            if (self._overlays or self._peak_curves) else "I/I$_0$"
+        )
         if errors is not None and np.any(np.isfinite(errors)):
             axes.errorbar(
                 x[interior], z.intensity[interior],
@@ -1042,7 +1220,8 @@ class CestPanel(QWidget):
         # A one-sigma band makes a marginal dip readable at a glance: a point
         # dipping below it is worth a second look, one inside it is not.
         sigma = z.noise
-        if not self._overlays and math.isfinite(sigma) and sigma > 0:
+        if (not self._overlays and not self._peak_curves
+                and math.isfinite(sigma) and sigma > 0):
             baseline = float(np.median(z.intensity[interior]))
             axes.axhspan(baseline - sigma, baseline + sigma,
                          color="#999", alpha=0.15, lw=0, label="\u00b11 sigma")
@@ -1056,7 +1235,7 @@ class CestPanel(QWidget):
         )
         axes.set_ylabel("I / I$_0$")
         axes.legend(loc="lower right", frameon=False,
-                    fontsize=7 if self._overlays else 8)
+                    fontsize=7 if (self._overlays or self._peak_curves) else 8)
         self._z_axes_ready = True
         self._apply_z_limits()
         plot.draw_idle()

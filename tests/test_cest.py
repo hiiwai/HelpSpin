@@ -577,3 +577,105 @@ def test_two_dip_fit_rejects_impossible_input():
     )
     with pytest.raises(CestError):
         fit_two_dips(tiny, 0.0, 2.0)
+
+
+# ------------------------------------------------------- peak identification
+
+def _spectrum_with_peaks(positions, heights, noise=1.0, seed=0):
+    ppm = np.linspace(-100.0, -140.0, 8192)      # descending, Bruker order
+    row = np.random.default_rng(seed).normal(0.0, noise, ppm.size)
+    for centre, height in zip(positions, heights, strict=True):
+        row = row + height * np.exp(-((ppm - centre) ** 2) / (2 * 0.02 ** 2))
+    return row, ppm
+
+
+def test_peaks_are_found_strongest_first():
+    from helspin.domain.cest import find_peaks_ppm
+
+    row, ppm = _spectrum_with_peaks([-110.0, -120.0, -130.0], [100.0, 500.0, 250.0])
+    peaks = find_peaks_ppm(row, ppm, min_snr=10.0)
+    found = [round(p, 1) for p, _ in peaks]
+    assert found[:3] == [-120.0, -130.0, -110.0]
+
+
+def test_noise_ripple_is_not_reported_as_peaks():
+    """A fraction of the tallest peak is not a sufficient threshold.
+
+    When one resonance dominates, 5% of it still sits above the baseline
+    ripple: on real 19F data that returned 94 "peaks", and choosing the one
+    nearest the carrier then picked noise rather than the true resonance.
+    """
+    from helspin.domain.cest import find_peaks_ppm
+
+    row, ppm = _spectrum_with_peaks([-120.0], [500.0], noise=1.0)
+    assert len(find_peaks_ppm(row, ppm, min_snr=10.0)) == 1
+
+
+def test_lowering_the_threshold_admits_more_peaks():
+    from helspin.domain.cest import find_peaks_ppm
+
+    row, ppm = _spectrum_with_peaks([-115.0, -125.0], [500.0, 40.0])
+    assert len(find_peaks_ppm(row, ppm, min_snr=50.0)) == 1
+    assert len(find_peaks_ppm(row, ppm, min_snr=5.0)) == 2
+
+
+def test_peak_list_is_capped():
+    from helspin.domain.cest import find_peaks_ppm
+
+    row, ppm = _spectrum_with_peaks([-120.0], [500.0], noise=10.0)
+    assert len(find_peaks_ppm(row, ppm, min_snr=1.5, limit=5)) <= 5
+
+
+def test_close_maxima_are_not_reported_twice():
+    """Shoulders of one resonance must not each become their own peak."""
+    from helspin.domain.cest import find_peaks_ppm
+
+    row, ppm = _spectrum_with_peaks([-120.0, -120.01], [500.0, 480.0])
+    peaks = find_peaks_ppm(row, ppm, min_snr=10.0, min_separation_ppm=0.1)
+    assert len(peaks) == 1
+
+
+def test_a_negative_peak_is_still_found_with_its_sign():
+    from helspin.domain.cest import find_peaks_ppm
+
+    row, ppm = _spectrum_with_peaks([-120.0], [-500.0])
+    peaks = find_peaks_ppm(row, ppm, min_snr=10.0)
+    assert len(peaks) == 1
+    assert peaks[0][1] < 0
+
+
+def test_carrier_position_from_sfo1_and_sf():
+    """The carrier is NOT the observed peak; offsets are measured from it."""
+    from helspin.domain.cest import carrier_ppm
+
+    assert carrier_ppm(564.620432843857, 564.686388214) == pytest.approx(
+        -116.80, abs=0.01
+    )
+    with pytest.raises(CestError):
+        carrier_ppm(564.62, 0.0)
+
+
+def test_nearest_peak_to_the_carrier_beats_the_tallest():
+    """The resonance the experiment is about sits beside the carrier.
+
+    Choosing the tallest instead would silently pick a different resonance
+    on a sample where an impurity or reference is stronger than the analyte.
+    """
+    from helspin.domain.cest import find_peaks_ppm, nearest_peak_ppm
+
+    row, ppm = _spectrum_with_peaks([-116.7, -125.0], [100.0, 900.0])
+    peaks = find_peaks_ppm(row, ppm, min_snr=10.0)
+    assert peaks[0][0] == pytest.approx(-125.0, abs=0.05)     # tallest
+    assert nearest_peak_ppm(peaks, -116.8) == pytest.approx(-116.7, abs=0.05)
+    assert nearest_peak_ppm([], -116.8) is None
+
+
+def test_peak_finding_rejects_bad_arguments():
+    from helspin.domain.cest import find_peaks_ppm
+
+    row, ppm = _spectrum_with_peaks([-120.0], [500.0])
+    with pytest.raises(CestError):
+        find_peaks_ppm(row, ppm[:-1], min_snr=10.0)
+    with pytest.raises(CestError):
+        find_peaks_ppm(row, ppm, min_fraction=0.0)
+    assert find_peaks_ppm(np.zeros(512), np.linspace(0, -10, 512)) == []

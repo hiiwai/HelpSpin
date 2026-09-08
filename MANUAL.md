@@ -444,6 +444,27 @@ matched to anything.
 Scroll the wheel over the plot to zoom x about the cursor; hold Shift to
 zoom y. The range boxes follow.
 
+### Working with several resonances
+
+**Find peak** picks the resonance nearest the carrier — the one the
+saturation offsets are measured from, and normally the one you want. The
+**peak list** below shows everything found, with each peak's offset from the
+carrier. The main peak is marked and always measured; tick another to add
+its Z-spectrum to the plot as a dashed curve, or double-click to make it the
+main peak instead. **Peak centre** stays freely editable if the detector
+misses one.
+
+Note that the carrier and the observed peak are different things. The peak
+is where you measure intensity; the carrier is the zero of the saturation
+axis. If they differ, the direct-saturation dip appears off-centre — a
+0.137 ppm difference put it at +78 Hz on the test data. Setting O1P exactly
+on the resonance avoids this.
+
+**detect above N x noise** controls how many peaks are listed. There is no
+universal setting: on one sample the main peak was 55x noise and a plausible
+second resonance only 6x. Lower it to look for weak resonances, raise it
+when the list fills with baseline ripple.
+
 ### Hunting a bound-state dip
 
 1. Shift-scroll to about 0.95–1.02 in y so the baseline fills the plot.

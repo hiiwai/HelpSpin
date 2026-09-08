@@ -755,6 +755,102 @@ def row_noise(
     return per_chunk.min(axis=1)
 
 
+def carrier_ppm(sfo1_mhz: float, sf_mhz: float) -> float:
+    """Where the transmitter sits, in ppm on the processed axis.
+
+    FQ1LIST offsets are applied to the CARRIER, so this is the true zero of
+    the saturation axis -- and it is not the same as the observed peak.
+    On real 19F data the peak sat 0.138 ppm from the carrier, which is why
+    the direct-saturation dip appeared at +78 Hz rather than at zero.
+    """
+    if sf_mhz <= 0:
+        raise CestError(f"SF must be positive, got {sf_mhz}")
+    return (sfo1_mhz - sf_mhz) / sf_mhz * 1e6
+
+
+def find_peaks_ppm(
+    row: np.ndarray,
+    ppm: np.ndarray,
+    *,
+    min_fraction: float = 0.02,
+    min_separation_ppm: float = 0.05,
+    min_snr: float = 20.0,
+    noise: float | None = None,
+    limit: int = 20,
+) -> list[tuple[float, float]]:
+    """Resonances in one row as (ppm, signed height), tallest first.
+
+    Local maxima of the MAGNITUDE, so a negative peak is still found -- a
+    row part-way through a nutation, or a badly phased spectrum, can invert
+    one. The height returned keeps its sign, because that is what a
+    measurement has to preserve.
+
+    min_separation_ppm stops a single noisy peak being reported as several:
+    without it the shoulders of one resonance each register as their own
+    maximum, and the peak list fills with duplicates of the same signal.
+
+    The threshold is driven by NOISE, not only by a fraction of the tallest
+    peak. A fraction alone fails badly when one resonance dominates: on real
+    19F data, 5% of the main peak still sat above the baseline ripple and
+    returned 94 "peaks", and picking the one nearest the carrier then chose
+    noise at -116.804 ppm instead of the true resonance at -116.663. Both
+    tests must pass -- a candidate has to clear min_snr times the noise AND
+    min_fraction of the maximum.
+    """
+    row = np.asarray(row, dtype=np.float64)
+    ppm = np.asarray(ppm, dtype=np.float64)
+    if row.size == 0 or row.size != ppm.size:
+        raise CestError("row and ppm axis must be the same non-zero length")
+    if not 0.0 < min_fraction < 1.0:
+        raise CestError(f"min_fraction must be between 0 and 1, got {min_fraction}")
+
+    magnitude = np.abs(row)
+    ceiling = float(magnitude.max())
+    if ceiling <= 0:
+        return []
+    if noise is None:
+        # Same estimator as row_noise: the quietest chunk, so a second
+        # resonance does not inflate the figure and hide itself.
+        chunks = max(1, min(16, magnitude.size // 64))
+        width = magnitude.size // chunks
+        estimates = []
+        for index in range(chunks):
+            block = row[index * width:(index + 1) * width]
+            if block.size:
+                estimates.append(
+                    1.4826 * float(np.median(np.abs(block - np.median(block))))
+                )
+        noise = min(estimates) if estimates else 0.0
+    threshold = max(ceiling * min_fraction, min_snr * float(noise))
+
+    interior = magnitude[1:-1]
+    is_peak = (interior > magnitude[:-2]) & (interior >= magnitude[2:])
+    candidates = np.flatnonzero(is_peak & (interior >= threshold)) + 1
+    if candidates.size == 0:
+        return []
+
+    # Strongest first, then drop anything too close to one already kept.
+    order = candidates[np.argsort(magnitude[candidates])[::-1]]
+    kept: list[int] = []
+    for index in order:
+        if all(abs(ppm[index] - ppm[other]) >= min_separation_ppm for other in kept):
+            kept.append(int(index))
+    # Capped, strongest first. Lowering the threshold far enough always
+    # starts returning baseline ripple -- on real 19F data, 3x noise gave 62
+    # "peaks" where 8x gave the one real resonance -- and an unbounded list
+    # is both unreadable and slow to build a widget from.
+    if limit > 0:
+        kept = kept[:limit]
+    return [(float(ppm[i]), float(row[i])) for i in kept]
+
+
+def nearest_peak_ppm(peaks: list[tuple[float, float]], target_ppm: float) -> float | None:
+    """The peak closest to a given position, or None if there are none."""
+    if not peaks:
+        return None
+    return min((p for p, _ in peaks), key=lambda p: abs(p - target_ppm))
+
+
 def find_peak_ppm(row: np.ndarray, ppm: np.ndarray) -> float:
     """ppm of the largest-magnitude point in a row."""
     row = np.asarray(row, dtype=np.float64)
