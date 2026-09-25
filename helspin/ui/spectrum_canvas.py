@@ -14,6 +14,7 @@ arrives, so dropping several does not block on the slowest one.
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -406,6 +407,23 @@ class SpectrumCanvas(QWidget):
         self._show_pulprog = True
         self._crosshair = None
         self._crosshair_enabled = True
+        # Pinned markers: (orientation, value) in DATA coordinates, so they
+        # stay on the feature through pan, zoom and rescale rather than on a
+        # fixed part of the screen -- a marker that drifts off the peak it
+        # was placed on is worse than none.
+        self._markers: list[tuple[str, float]] = []
+        # Defaults deliberately match the crosshair: a marker is a pinned
+        # cursor position, so it should look like one until told otherwise.
+        self._marker_style = {
+            "color": "#888888",
+            "width": 0.6,
+            "dash": "--",
+            "alpha": 0.8,
+        }
+        # Where the last right-click landed, in data coordinates. The context
+        # menu has no idea where the pointer was, so it is captured on the
+        # press that opens it.
+        self._context_point: tuple[float, float] | None = None
         self._drag_start = None
         self._label_artists = []
         self._label_drag = None
@@ -1521,6 +1539,10 @@ class SpectrumCanvas(QWidget):
         # label travels with its spectrum when stacked -- and is not dragged
         # around by y-scaling the way a legend entry would be.
         self._draw_trace_labels(drawn, left, right)
+        # After the traces, so a marker sits on top of the data it marks;
+        # before tight_layout, so its value label is inside the figure and
+        # does not get cropped from a saved image.
+        self._draw_markers()
 
         self._figure.tight_layout(rect=(0, 0, self.RIGHT_MARGIN, 1))
         self._canvas.draw_idle()
@@ -2132,12 +2154,135 @@ class SpectrumCanvas(QWidget):
         menu.addAction("Auto scale Y", self.autoscale_traces)
         menu.addAction("Fit Y to data", self.fit_to_drawn)
         menu.addAction("All to bottom", self.move_all_to_bottom)
+        menu.addSeparator()
+        point = self._context_point
+        vertical = menu.addAction(
+            "Add vertical marker here", lambda: self.add_marker("vertical")
+        )
+        horizontal = menu.addAction(
+            "Add horizontal marker here", lambda: self.add_marker("horizontal")
+        )
+        # Greyed rather than hidden when the click was outside the axes, so
+        # the menu keeps the same shape and the entries stay findable.
+        vertical.setEnabled(point is not None)
+        horizontal.setEnabled(point is not None)
+        remove = menu.addAction("Remove nearest marker", self.remove_nearest_marker)
+        remove.setEnabled(bool(self._markers) and point is not None)
+        clear = menu.addAction("Clear all markers", self.clear_markers)
+        clear.setEnabled(bool(self._markers))
         return menu
+
+    # ------------------------------------------------------------- markers
+
+    def markers(self) -> list:
+        """Pinned markers as (orientation, value)."""
+        return list(self._markers)
+
+    def marker_style(self) -> dict:
+        return dict(self._marker_style)
+
+    def set_marker_style(self, **style) -> None:
+        """Override colour, width, dash or alpha; unknown keys are ignored."""
+        for key in ("color", "width", "dash", "alpha"):
+            if key in style and style[key] is not None:
+                self._marker_style[key] = style[key]
+        self._redraw()
+
+    def add_marker(self, orientation: str, value: float | None = None) -> bool:
+        """Pin a marker. value defaults to the last right-click position."""
+        if orientation not in ("vertical", "horizontal"):
+            raise ValueError(f"unknown marker orientation {orientation!r}")
+        if value is None:
+            if self._context_point is None:
+                return False
+            value = self._context_point[0 if orientation == "vertical" else 1]
+        if not math.isfinite(value):
+            return False
+        self._markers.append((orientation, float(value)))
+        self._redraw()
+        return True
+
+    def remove_nearest_marker(self) -> bool:
+        """Drop the marker closest to the last right-click.
+
+        Distance is measured in AXES fractions, not data units: a ppm axis
+        and an intensity axis have wildly different scales, so comparing raw
+        differences would make the vertical markers always look nearer.
+        """
+        if not self._markers or self._context_point is None:
+            return False
+        x, y = self._context_point
+        left, right = self._axes.get_xlim()
+        bottom, top = self._axes.get_ylim()
+        span_x = abs(right - left) or 1.0
+        span_y = abs(top - bottom) or 1.0
+
+        def distance(marker):
+            orientation, value = marker
+            if orientation == "vertical":
+                return abs(value - x) / span_x
+            return abs(value - y) / span_y
+
+        self._markers.remove(min(self._markers, key=distance))
+        self._redraw()
+        return True
+
+    def clear_markers(self) -> None:
+        if self._markers:
+            self._markers.clear()
+            self._redraw()
+
+    def _draw_markers(self) -> None:
+        """Draw pinned markers, each labelled with its value."""
+        style = self._marker_style
+        digits = self._cursor_decimals
+        for orientation, value in self._markers:
+            if orientation == "vertical":
+                self._axes.axvline(
+                    value, color=style["color"], linewidth=style["width"],
+                    linestyle=style["dash"], alpha=style["alpha"],
+                )
+                self._axes.text(
+                    value, 1.005, f"{value:.{digits}f}",
+                    transform=self._axes.get_xaxis_transform(),
+                    ha="center", va="bottom", fontsize=8,
+                    color=style["color"], clip_on=False,
+                )
+            else:
+                self._axes.axhline(
+                    value, color=style["color"], linewidth=style["width"],
+                    linestyle=style["dash"], alpha=style["alpha"],
+                )
+                self._axes.text(
+                    1.002, value, f"{value:.{digits}f}",
+                    transform=self._axes.get_yaxis_transform(),
+                    ha="left", va="center", fontsize=8,
+                    color=style["color"], clip_on=False,
+                )
 
     def _on_context_menu(self, pos) -> None:
         if not self._traces:
             return
+        self._context_point = self._data_point_at(pos)
         self.build_context_menu().exec(self.mapToGlobal(pos))
+
+    def _data_point_at(self, pos):
+        """Widget position -> data coordinates, or None if outside the axes.
+
+        Qt gives the menu a position in WIDGET pixels with the origin at the
+        top; matplotlib measures from the bottom, so the y needs flipping
+        before the inverse transform, or every marker lands mirrored.
+        """
+        try:
+            height = self.figure.bbox.height
+            x, y = self._axes.transData.inverted().transform(
+                (pos.x(), height - pos.y())
+            )
+        except Exception:
+            return None
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return None
+        return float(x), float(y)
 
     def request_save_image(self) -> None:
         """Ask for a path and write the figure exactly as displayed."""

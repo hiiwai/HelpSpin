@@ -801,6 +801,7 @@ class MainWindow(QMainWindow):
             "label_scale": self._canvas.set_label_scale,
             "opacity": self._canvas.set_trace_opacity,
             "cursor_decimals": self._canvas.set_cursor_decimals,
+            "marker_style": lambda value: self._canvas.set_marker_style(**value),
         }
         for key, setter in setters.items():
             if key in saved:
@@ -819,6 +820,7 @@ class MainWindow(QMainWindow):
             label_scale=self._canvas.label_scale(),
             opacity=self._canvas.trace_opacity(),
             cursor_decimals=self._canvas.cursor_decimals(),
+            marker_style=self._canvas.marker_style(),
             grid_spacing_y=self._canvas.grid_spacing_y(),
             palette=self._palette_name,
             parent=self,
@@ -835,6 +837,7 @@ class MainWindow(QMainWindow):
         self._canvas.set_label_scale(dialog.label_scale())
         self._canvas.set_trace_opacity(dialog.opacity())
         self._canvas.set_cursor_decimals(dialog.cursor_decimals())
+        self._canvas.set_marker_style(**dialog.marker_style())
         self._canvas.set_grid_spacing_y(dialog.grid_spacing_y())
         self._palette_name = dialog.palette()
         save_slot_styles(styles)   # default for next run
@@ -847,6 +850,7 @@ class MainWindow(QMainWindow):
             "label_scale": self._canvas.label_scale(),
             "opacity": self._canvas.trace_opacity(),
             "cursor_decimals": self._canvas.cursor_decimals(),
+            "marker_style": self._canvas.marker_style(),
             "palette": self._palette_name,
         })
         self._sync_spectrum_list()

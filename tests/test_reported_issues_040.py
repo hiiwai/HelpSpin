@@ -1264,3 +1264,32 @@ def test_offset_is_pure_translation_in_stacked_mode(qtbot):
     # the other two spectra do not move
     assert baseline_pct(1) == pytest.approx(others_before[0], abs=0.5)
     assert baseline_pct(2) == pytest.approx(others_before[1], abs=0.5)
+
+
+def test_preferences_round_trips_the_marker_style(qtbot):
+    """Style set in the dialog must come back out unchanged.
+
+    Defaults match the crosshair, so a marker looks like a pinned cursor
+    position until the user decides otherwise.
+    """
+    from helspin.ui.preferences_dialog import PreferencesDialog
+
+    dialog = PreferencesDialog(
+        marker_style={"color": "#cc0000", "width": 1.4, "dash": ":", "alpha": 0.5}
+    )
+    qtbot.addWidget(dialog)
+    style = dialog.marker_style()
+    assert style["color"] == "#cc0000"
+    assert style["width"] == pytest.approx(1.4)
+    assert style["dash"] == ":"
+    assert style["alpha"] == pytest.approx(0.5)
+
+
+def test_preferences_marker_defaults_match_the_crosshair(qtbot):
+    from helspin.ui.preferences_dialog import PreferencesDialog
+
+    dialog = PreferencesDialog()
+    qtbot.addWidget(dialog)
+    assert dialog.marker_style() == {
+        "color": "#888888", "width": 0.6, "dash": "--", "alpha": 0.8,
+    }

@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.9.0 - 2026-09-25
+
+### Pinned markers on the spectrum canvas
+
+Right-click the canvas and choose **Add vertical marker here** or **Add
+horizontal marker here**. The marker stays where the click landed, labelled
+with its value to the precision set by Cursor decimals. **Remove nearest
+marker** and **Clear all markers** are in the same menu; both are greyed
+rather than hidden when they do not apply, so the menu keeps a stable shape.
+
+Markers are stored in DATA coordinates, so they stay on the feature through
+pan, zoom and rescale. A marker that drifted off the peak it was placed on
+would be worse than none.
+
+"Remove nearest" measures distance in axes FRACTIONS rather than data units.
+A ppm axis and an intensity axis have wildly different scales, so comparing
+raw differences would make vertical markers always look nearer and remove
+the wrong one whenever both kinds were on the plot.
+
+Appearance -- colour, width, dash and opacity -- is set in Preferences and
+defaults to the crosshair's own style, since a marker is a pinned cursor
+position and should look like one until told otherwise.
+
+1100 tests (up from 1088).
+
+
 ## 0.8.0 - 2026-09-08
 
 ### Multiple peaks

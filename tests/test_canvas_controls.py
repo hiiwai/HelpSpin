@@ -2529,3 +2529,107 @@ def test_a_dragged_label_survives_a_later_insertion(qtbot):
     canvas._redraw()
     dragged = next(t for t in canvas.traces if t.label == "second")
     assert dragged.label_pos == moved
+
+
+def _canvas_with_trace(qtbot):
+    canvas = SpectrumCanvas(reader=FakeReader())
+    canvas.handle_mime_data(mime_for(item(path="/d/a", label="one")))
+    qtbot.waitUntil(lambda: len(canvas.traces) == 1, timeout=3000)
+    return canvas
+
+
+def test_markers_default_to_the_crosshair_style(qtbot):
+    """A marker is a pinned cursor position, so it should look like one."""
+    canvas = _canvas_with_trace(qtbot)
+    style = canvas.marker_style()
+    assert style == {"color": "#888888", "width": 0.6, "dash": "--", "alpha": 0.8}
+
+
+def test_adding_and_clearing_markers(qtbot):
+    canvas = _canvas_with_trace(qtbot)
+    canvas._context_point = (5.0, 100.0)
+    assert canvas.add_marker("vertical") is True
+    assert canvas.add_marker("horizontal") is True
+    assert canvas.markers() == [("vertical", 5.0), ("horizontal", 100.0)]
+    canvas.clear_markers()
+    assert canvas.markers() == []
+
+
+def test_a_marker_without_a_click_position_is_refused(qtbot):
+    canvas = _canvas_with_trace(qtbot)
+    canvas._context_point = None
+    assert canvas.add_marker("vertical") is False
+    assert canvas.markers() == []
+
+
+def test_an_unknown_orientation_is_rejected(qtbot):
+    canvas = _canvas_with_trace(qtbot)
+    with pytest.raises(ValueError):
+        canvas.add_marker("diagonal", 1.0)
+
+
+def test_nearest_marker_is_measured_in_axes_fractions(qtbot):
+    """A ppm axis and an intensity axis have wildly different scales.
+
+    Comparing raw data differences would make vertical markers always look
+    nearer, so the wrong one would be removed whenever both kinds are on the
+    plot.
+    """
+    canvas = _canvas_with_trace(qtbot)
+    canvas.add_marker("vertical", 5.0)
+    canvas.add_marker("horizontal", 100.0)
+    canvas._context_point = (5.05, 0.0)       # right beside the vertical one
+    assert canvas.remove_nearest_marker() is True
+    assert canvas.markers() == [("horizontal", 100.0)]
+
+
+def test_removing_with_no_markers_is_harmless(qtbot):
+    canvas = _canvas_with_trace(qtbot)
+    canvas._context_point = (1.0, 1.0)
+    assert canvas.remove_nearest_marker() is False
+
+
+def test_marker_menu_entries_are_disabled_without_a_position(qtbot):
+    """Greyed rather than hidden, so the menu keeps a stable shape."""
+    canvas = _canvas_with_trace(qtbot)
+    canvas._context_point = None
+    entries = {a.text(): a for a in canvas.build_context_menu().actions() if a.text()}
+    assert entries["Add vertical marker here"].isEnabled() is False
+    assert entries["Clear all markers"].isEnabled() is False
+
+    canvas._context_point = (5.0, 100.0)
+    canvas.add_marker("vertical")
+    entries = {a.text(): a for a in canvas.build_context_menu().actions() if a.text()}
+    assert entries["Add vertical marker here"].isEnabled() is True
+    assert entries["Clear all markers"].isEnabled() is True
+
+
+def test_markers_survive_a_redraw(qtbot):
+    """Stored in DATA coordinates, so they stay on the feature."""
+    canvas = _canvas_with_trace(qtbot)
+    canvas.add_marker("vertical", 5.0)
+    canvas._redraw()
+    assert canvas.markers() == [("vertical", 5.0)]
+    drawn = [
+        line for line in canvas._axes.get_lines()
+        if line.get_linestyle() == "--"
+    ]
+    assert drawn, "marker was not drawn"
+
+
+def test_marker_style_can_be_overridden(qtbot):
+    canvas = _canvas_with_trace(qtbot)
+    canvas.set_marker_style(color="#cc0000", width=1.4, dash=":", alpha=0.5)
+    assert canvas.marker_style()["color"] == "#cc0000"
+    # Unknown and None values are ignored rather than corrupting the style.
+    canvas.set_marker_style(nonsense="x", width=None)
+    assert canvas.marker_style()["width"] == 1.4
+
+
+def test_marker_value_label_uses_the_cursor_decimals(qtbot):
+    canvas = _canvas_with_trace(qtbot)
+    canvas.set_cursor_decimals(3)
+    canvas.add_marker("vertical", 5.25)
+    canvas._redraw()
+    texts = [t.get_text() for t in canvas._axes.texts]
+    assert "5.250" in texts

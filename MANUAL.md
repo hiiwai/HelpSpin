@@ -331,6 +331,16 @@ BSD-style.
 
 ---
 
+## Markers
+
+Right-click the spectrum canvas to pin a vertical or horizontal marker where
+you clicked, labelled with its value. **Remove nearest marker** drops the
+closest one; **Clear all markers** empties them.
+
+Markers are held in data coordinates, so they stay on the feature when you
+pan, zoom or rescale. Their colour, width, dash and opacity are in
+Preferences, and default to matching the cursor crosshair.
+
 ## CEST mode
 
 Toolbar **CEST…**, or File → CEST…. Opens its own window. If exactly one

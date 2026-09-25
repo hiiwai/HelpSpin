@@ -116,7 +116,8 @@ class PreferencesDialog(QDialog):
 
     def __init__(self, styles=None, grid_spacing=None, x_decimals=None,
                  label_scale=1.0, opacity=1.0, cursor_decimals=2,
-                 grid_spacing_y=None, palette=None, parent=None):
+                 grid_spacing_y=None, palette=None, marker_style=None,
+                 parent=None):
         super().__init__(parent)
         self.setWindowTitle("Preferences")
 
@@ -269,6 +270,34 @@ class PreferencesDialog(QDialog):
         )
         self._cursor_decimals.setValue(int(cursor_decimals or 2))
 
+        # Pinned-marker appearance. Defaults match the crosshair, because a
+        # marker IS a pinned cursor position and should look like one until
+        # the user decides otherwise.
+        marker_style = dict(marker_style or {})
+        self._marker_width = QDoubleSpinBox()
+        self._marker_width.setDecimals(1)
+        self._marker_width.setRange(0.1, 10.0)
+        self._marker_width.setSingleStep(0.1)
+        self._marker_width.setValue(float(marker_style.get("width", 0.6)))
+        self._marker_width.setToolTip("Line width of pinned markers.")
+
+        self._marker_alpha = QDoubleSpinBox()
+        self._marker_alpha.setDecimals(2)
+        self._marker_alpha.setRange(0.05, 1.0)
+        self._marker_alpha.setSingleStep(0.05)
+        self._marker_alpha.setValue(float(marker_style.get("alpha", 0.8)))
+        self._marker_alpha.setToolTip("Opacity of pinned markers.")
+
+        self._marker_dash = QComboBox()
+        for label, value in (
+            ("dashed", "--"), ("dotted", ":"), ("solid", "-"), ("dash-dot", "-."),
+        ):
+            self._marker_dash.addItem(label, value)
+        index = self._marker_dash.findData(marker_style.get("dash", "--"))
+        self._marker_dash.setCurrentIndex(max(index, 0))
+
+        self._marker_colour = _ColorSwatch(marker_style.get("color", "#888888"))
+
         self._label_scale = QDoubleSpinBox()
         self._label_scale.setDecimals(2)
         self._label_scale.setRange(0.3, 4.0)
@@ -311,7 +340,26 @@ class PreferencesDialog(QDialog):
         layout.addWidget(global_holder)
         layout.addLayout(grid)
         layout.addWidget(grid_holder)
+        marker_holder = QWidget()
+        marker_row = QHBoxLayout(marker_holder)
+        marker_row.setContentsMargins(0, 0, 0, 0)
+        marker_row.addWidget(QLabel("Markers:"))
+        marker_row.addWidget(QLabel("colour"))
+        marker_row.addWidget(self._marker_colour)
+        marker_row.addWidget(QLabel("width"))
+        marker_row.addWidget(self._marker_width)
+        marker_row.addWidget(QLabel("style"))
+        marker_row.addWidget(self._marker_dash)
+        marker_row.addWidget(QLabel("opacity"))
+        marker_row.addWidget(self._marker_alpha)
+        marker_row.addStretch(1)
+        marker_holder.setToolTip(
+            "Appearance of markers pinned with right-click on the canvas.\n"
+            "Defaults match the cursor crosshair."
+        )
+
         layout.addWidget(axis_holder)
+        layout.addWidget(marker_holder)
         layout.addWidget(reset_button, 0, Qt.AlignLeft)
         layout.addWidget(note)
         layout.addWidget(buttons)
@@ -368,6 +416,15 @@ class PreferencesDialog(QDialog):
 
     def cursor_decimals(self) -> int:
         return int(self._cursor_decimals.value())
+
+    def marker_style(self) -> dict:
+        """Appearance of pinned canvas markers."""
+        return {
+            "color": self._marker_colour.color(),
+            "width": float(self._marker_width.value()),
+            "dash": self._marker_dash.currentData(),
+            "alpha": float(self._marker_alpha.value()),
+        }
 
     def opacity(self) -> float:
         return float(self._opacity.value())
