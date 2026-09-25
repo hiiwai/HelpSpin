@@ -2269,18 +2269,29 @@ class SpectrumCanvas(QWidget):
     def _data_point_at(self, pos):
         """Widget position -> data coordinates, or None if outside the axes.
 
-        Qt gives the menu a position in WIDGET pixels with the origin at the
-        top; matplotlib measures from the bottom, so the y needs flipping
-        before the inverse transform, or every marker lands mirrored.
+        Three conversions have to line up, and getting any of them wrong
+        silently disables the marker menu rather than failing loudly:
+
+        1. `pos` is relative to THIS widget, but the figure lives in a child
+           FigureCanvas, so it is mapped across first. SpectrumCanvas is a
+           QWidget wrapping a canvas, not a canvas itself -- there is no
+           `self.figure`.
+        2. Qt measures y from the TOP, matplotlib from the bottom, so y is
+           flipped or every marker lands mirrored.
+        3. The figure's bbox is in DISPLAY pixels while Qt reports LOGICAL
+           ones, which differ by the device pixel ratio on a HiDPI screen.
+           Scaling by it keeps a Retina display honest.
         """
-        try:
-            height = self.figure.bbox.height
-            x, y = self._axes.transData.inverted().transform(
-                (pos.x(), height - pos.y())
-            )
-        except Exception:
-            return None
+        canvas = self._canvas
+        local = canvas.mapFrom(self, pos)
+        ratio = float(canvas.devicePixelRatioF() or 1.0)
+        height = canvas.figure.bbox.height
+        point = (local.x() * ratio, height - local.y() * ratio)
+        x, y = self._axes.transData.inverted().transform(point)
         if not (math.isfinite(x) and math.isfinite(y)):
+            return None
+        # Outside the plotting area means there is nothing to mark.
+        if not self._axes.bbox.contains(*point):
             return None
         return float(x), float(y)
 

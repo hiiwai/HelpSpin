@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QMimeData, Qt
+from PySide6.QtCore import QMimeData, QPoint, Qt
 
 from helspin.ui.dataset_model import MIME_DATASET
 from helspin.ui.preferences_dialog import (
@@ -2674,3 +2674,54 @@ def test_normalise_to_noise_survives_reversed_load_order(qtbot):
     assert canvas.normalise_to_noise() is True
     factors = sorted(t.y_scale for t in canvas.traces)
     assert 100 < factors[1] < 10000
+
+
+def test_context_click_maps_to_a_real_data_point(qtbot):
+    """The conversion silently disabled the whole marker menu when wrong.
+
+    SpectrumCanvas is a QWidget WRAPPING a FigureCanvas, so `self.figure`
+    does not exist; reaching for it raised AttributeError, which a broad
+    except turned into "no click position" and hence a fully greyed menu.
+    Three things have to line up: the widget-to-canvas mapping, Qt's
+    top-left origin against matplotlib's bottom-left, and the device pixel
+    ratio on a HiDPI screen.
+    """
+    canvas = _canvas_with_trace(qtbot)
+    canvas.resize(600, 400)
+    canvas.show()
+    qtbot.waitExposed(canvas)
+
+    centre = QPoint(canvas.width() // 2, canvas.height() // 2)
+    point = canvas._data_point_at(centre)
+    assert point is not None, "clicking the middle of the plot found nothing"
+
+    low, high = canvas._axes.get_xlim()
+    assert min(low, high) <= point[0] <= max(low, high)
+    bottom, top = canvas._axes.get_ylim()
+    assert min(bottom, top) <= point[1] <= max(bottom, top)
+
+
+def test_a_click_outside_the_axes_finds_nothing(qtbot):
+    """The figure margin is not part of the plot; there is nothing to mark."""
+    canvas = _canvas_with_trace(qtbot)
+    canvas.resize(600, 400)
+    canvas.show()
+    qtbot.waitExposed(canvas)
+    assert canvas._data_point_at(QPoint(1, 1)) is None
+
+
+def test_right_click_enables_the_marker_entries(qtbot):
+    """End to end: a click inside the plot must leave the menu usable."""
+    canvas = _canvas_with_trace(qtbot)
+    canvas.resize(600, 400)
+    canvas.show()
+    qtbot.waitExposed(canvas)
+
+    centre = QPoint(canvas.width() // 2, canvas.height() // 2)
+    canvas._context_point = canvas._data_point_at(centre)
+    entries = {a.text(): a for a in canvas.build_context_menu().actions() if a.text()}
+    assert entries["Add vertical marker here"].isEnabled() is True
+    assert entries["Add horizontal marker here"].isEnabled() is True
+
+    assert canvas.add_marker("vertical") is True
+    assert len(canvas.markers()) == 1

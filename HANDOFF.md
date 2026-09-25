@@ -681,3 +681,12 @@ A counter is worse than merely order-dependent: `self.n += 1` is not atomic
 across the loading threads, so both reads can see the same value and return
 IDENTICAL spectra. That is how normalise_to_noise came out as 1.0. Key test
 readers on the path, always.
+
+## SpectrumCanvas is not a FigureCanvas (0.9.2)
+
+It is a QWidget wrapping one: `self._canvas` is the FigureCanvas and
+`self._figure` the Figure. `self.figure` does not exist. Mouse positions
+from Qt need mapping into the child canvas, flipping in y, and scaling by
+the device pixel ratio before `transData.inverted()`. Do not wrap that in a
+broad `except` -- it hid the marker menu being dead for a whole release.
+

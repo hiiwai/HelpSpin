@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.9.2 - 2026-09-25
+
+### Fixed: the marker menu appeared but nothing could be selected
+
+Right-clicking the canvas showed the menu with every marker entry greyed
+out, and no marker could be added at all.
+
+`SpectrumCanvas` is a QWidget WRAPPING a FigureCanvas, not a canvas itself,
+so `self.figure` does not exist. Reaching for it raised AttributeError on
+every right-click -- and a broad `except Exception` turned that into "no
+click position", which is exactly the state the entries are greyed for. The
+feature had never worked; the except clause hid the reason.
+
+The conversion now maps the click into the child canvas, flips Qt's
+top-left origin to matplotlib's bottom-left, and scales by the device pixel
+ratio so a HiDPI screen is not off by a factor of two. A click outside the
+plotting area returns nothing, as it should. The broad except is gone, so a
+future mistake here fails loudly instead of silently disabling the menu.
+
+Three regression tests cover it: a click at the centre of the plot must map
+inside the axes, a click in the margin must not, and the menu entries must
+end up enabled.
+
+1104 tests (up from 1101).
+
+
 ## 0.9.1 - 2026-09-25
 
 ### Fixed: two more test fixtures that depended on thread scheduling
