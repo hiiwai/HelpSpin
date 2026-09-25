@@ -670,10 +670,14 @@ evenly. Do not remove that branch even though the floor is now 0.12 -- users
 run whatever their environment has, and this failed on a second machine
 after working on the first.
 
-## Concurrency in canvas tests (0.6.3)
+## Concurrency in canvas tests (0.6.3, again in 0.9.1)
 
 Loads run in a thread pool. Any fixture keyed on call ORDER rather than on
 the path will pass on one machine and fail on another. Two tests did exactly
 that for two releases. When a test needs out-of-order completion, force it
 with a per-path delay rather than hoping the scheduler obliges.
 
+A counter is worse than merely order-dependent: `self.n += 1` is not atomic
+across the loading threads, so both reads can see the same value and return
+IDENTICAL spectra. That is how normalise_to_noise came out as 1.0. Key test
+readers on the path, always.

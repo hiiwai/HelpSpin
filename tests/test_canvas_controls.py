@@ -641,14 +641,16 @@ def test_list_panel_no_longer_has_a_line_style_combo():
 
 
 class BigSmallReader:
-    """Two spectra three orders of magnitude apart, like real data."""
+    """Two spectra three orders of magnitude apart, like real data.
 
-    def __init__(self):
-        self.n = 0
+    Keyed on the PATH. A call counter would decide which spectrum is the big
+    one from thread scheduling, since the canvas loads concurrently -- and a
+    counter shared between threads can hand the SAME index to both, making
+    the two spectra identical and the test meaningless.
+    """
 
     def read_1d(self, path, procno=1):
-        self.n += 1
-        amp = 1e11 if self.n == 1 else 1e8
+        amp = 1e11 if str(path).endswith("/0") else 1e8
         s = FakeSpectrum()
         s.real = np.linspace(0.0, amp, 128)
         return s
@@ -1035,15 +1037,19 @@ def test_default_palette_has_no_near_invisible_yellow():
 
 
 class NoisyReader:
-    """Two spectra with the SAME true SNR but wildly different absolute scale."""
+    """Two spectra with the SAME true SNR but wildly different absolute scale.
 
-    def __init__(self):
-        self.n = 0
+    Keyed on the PATH, not on a call counter. The canvas loads concurrently,
+    so a counter makes "which spectrum is strong" depend on which thread
+    wins -- and two threads can both read n == 1 before either increments,
+    producing two IDENTICAL spectra and a normalisation factor of 1.0.
+    Observed as a failure on a faster machine while passing on a slower one.
+    """
 
     def read_1d(self, path, procno=1):
-        self.n += 1
-        rng = np.random.default_rng(self.n)
-        amp, noise = (1e11, 1e9) if self.n == 1 else (1e8, 1e6)
+        strong = str(path).endswith("/0")
+        rng = np.random.default_rng(0 if strong else 1)
+        amp, noise = (1e11, 1e9) if strong else (1e8, 1e6)
         n = 2048
         x = np.arange(n)
         s = FakeSpectrum(n)
@@ -2633,3 +2639,38 @@ def test_marker_value_label_uses_the_cursor_decimals(qtbot):
     canvas._redraw()
     texts = [t.get_text() for t in canvas._axes.texts]
     assert "5.250" in texts
+
+
+class _SlowStrongReader(NoisyReader):
+    """Makes the STRONG spectrum finish last, deterministically.
+
+    Forces the ordering that broke normalise_to_noise on a fast machine,
+    without depending on how the scheduler happens to behave here.
+    """
+
+    def read_1d(self, path, procno=1):
+        if str(path).endswith("/0"):
+            time.sleep(0.25)
+        return super().read_1d(path, procno)
+
+
+def test_normalise_to_noise_survives_reversed_load_order(qtbot):
+    """Which spectrum is "strong" must come from the PATH, not call order.
+
+    A counter shared across the loading threads let both reads see n == 1,
+    so both spectra came out identical and every scale factor was 1.0 --
+    green on a slow machine, red on a fast one.
+    """
+    canvas = SpectrumCanvas(reader=_SlowStrongReader())
+    canvas.handle_mime_data(
+        mime_for(item(path="/d/0", label="strong"), item(path="/d/1", label="weak"))
+    )
+    qtbot.waitUntil(lambda: len(canvas.traces) == 2, timeout=5000)
+
+    # The two spectra must actually differ, whatever order they arrived in.
+    amplitudes = sorted(float(np.max(t.intensity)) for t in canvas.traces)
+    assert amplitudes[1] / amplitudes[0] > 100
+
+    assert canvas.normalise_to_noise() is True
+    factors = sorted(t.y_scale for t in canvas.traces)
+    assert 100 < factors[1] < 10000

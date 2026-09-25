@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.9.1 - 2026-09-25
+
+### Fixed: two more test fixtures that depended on thread scheduling
+
+`NoisyReader` and `BigSmallReader` decided which of their two spectra was
+the large one from a CALL COUNTER rather than from the path. The canvas
+loads concurrently, so the answer depended on which thread won -- and worse,
+a counter shared between threads can hand the same index to both reads,
+producing two IDENTICAL spectra and a normalisation factor of 1.0.
+
+`test_normalise_to_noise_uses_mad_not_sigma` failed exactly that way on a
+fast machine while passing on a slower one. Both readers are now keyed on
+the path, and a regression test forces the strong spectrum to finish LAST so
+the ordering is exercised deterministically instead of being left to the
+scheduler.
+
+This is the same class of fault fixed in `DifferentLengthReader` in 0.6.3;
+these two were missed then. A grep for counter-keyed readers found no
+others.
+
+1101 tests (up from 1100).
+
+
 ## 0.9.0 - 2026-09-25
 
 ### Pinned markers on the spectrum canvas
