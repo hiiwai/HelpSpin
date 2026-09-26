@@ -1,4 +1,4 @@
-# HelSpin
+# Hel(p)Spin
 
 Compare Bruker NMR spectra and build publication figures. Previously
 developed under the working name VertaaNMR.
