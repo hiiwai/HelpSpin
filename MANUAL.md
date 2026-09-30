@@ -450,6 +450,13 @@ matched to anything.
   power series (30/60/100 Hz) and the partner-free control from Part 7 of the
   19F CEST manual — a real exchange feature moves predictably with field and
   is absent from the control, and both are far easier to judge on one axis.
+- **Add experiment…** — overlay another CEST expno without replacing the
+  loaded one. It is measured with the current half-width, measurement,
+  reference and error-bar settings, on the peak nearest the current main
+  peak. Selecting several expnos in the browser before opening CEST loads the
+  first and overlays the rest in one step.
+- **Save image…** (Ctrl+S / Cmd+S) — saves the plot on the current tab as
+  PNG, PDF, SVG or TIFF (300 dpi for raster formats), exactly as zoomed.
 
 Scroll the wheel over the plot to zoom x about the cursor; hold Shift to
 zoom y. The range boxes follow.

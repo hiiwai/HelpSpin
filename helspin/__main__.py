@@ -372,8 +372,9 @@ class MainWindow(QMainWindow):
         orphaned. Reusing also preserves whatever the user had loaded.
 
         If exactly one expno is selected in the browser it is loaded
-        straight away, which is the common case -- otherwise the panel opens
-        empty with its own file chooser.
+        straight away, which is the common case. Several selected expnos are
+        compared: the first is loaded and the rest overlaid on its
+        Z-spectrum. With none, the panel opens empty with its own chooser.
         """
         from .ui.cest_panel import CestPanel
 
@@ -391,6 +392,10 @@ class MainWindow(QMainWindow):
         selected = self._selected_expnos()
         if len(selected) == 1:
             panel.load(selected[0])
+        elif len(selected) > 1:
+            # Several expnos: the first is loaded and the rest are overlaid
+            # on its Z-spectrum, for comparing a series in one step.
+            panel.compare(selected)
         panel.show()
         panel.raise_()
         panel.activateWindow()

@@ -690,3 +690,14 @@ from Qt need mapping into the child canvas, flipping in y, and scaling by
 the device pixel ratio before `transData.inverted()`. Do not wrap that in a
 broad `except` -- it hid the marker menu being dead for a whole release.
 
+## CEST widgets must be ADDED to a layout, not just built (0.9.3)
+
+The peak list and the overlay list with its Keep/Remove/Clear buttons were
+constructed in `_build_z_tab` from 0.8.0 on but never placed in a layout, so
+the comparison feature was unreachable while every test passed -- the tests
+call the methods directly. `test_overlay_and_peak_widgets_are_in_the_window`
+now walks the parent chain. Any new control needs the same check.
+
+Overlays are redrawn with `_redraw_z`, never by calling `_build_z`: keeping
+or removing a curve must not refit the loaded experiment or rewrite its
+result text, and must still work when no Z-spectrum is built.

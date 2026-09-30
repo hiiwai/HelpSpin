@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import contextlib
 import math
+import re
 from pathlib import Path
 
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -38,6 +40,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QTabWidget,
     QVBoxLayout,
@@ -78,6 +81,18 @@ OVERLAY_COLOURS = (
     "#1b6ca8", "#d1495b", "#3f8f52", "#8b5fbf", "#e0a458",
     "#00838f", "#a8442a", "#5a6b7c",
 )
+
+# Image formats offered by "Save image". Every one is written by matplotlib's
+# own backends (TIFF through Pillow, a matplotlib dependency), so nothing here
+# needs a platform library -- the same list works on Windows and macOS.
+IMAGE_FILTERS = (
+    ("PNG image (*.png)", ".png"),
+    ("PDF document (*.pdf)", ".pdf"),
+    ("SVG drawing (*.svg)", ".svg"),
+    ("TIFF image (*.tif *.tiff)", ".tif"),
+)
+IMAGE_SUFFIXES = {".png", ".pdf", ".svg", ".tif", ".tiff"}
+IMAGE_DPI = 300
 
 
 class _Plot(FigureCanvasQTAgg):
@@ -182,6 +197,8 @@ class CestPanel(QWidget):
         # normalised curve rather than the raw rows also means an overlay
         # entry survives its dataset being unloaded.
         self._overlays: list[tuple[str, object]] = []
+        self._data_path = None
+        self._last_image_dir: Path | None = None
 
         self._path_label = QLabel("No experiment loaded")
         self._path_label.setWordWrap(True)
@@ -194,6 +211,14 @@ class CestPanel(QWidget):
         open_button.clicked.connect(self._choose)
         reload_button = QPushButton("Reload")
         reload_button.clicked.connect(self._reload)
+        # One button for both tabs: it saves whichever plot is showing.
+        self._save_image_button = QPushButton("Save image\u2026")
+        self._save_image_button.setToolTip(
+            "Save the plot on the current tab as PNG, PDF, SVG or TIFF.\n"
+            f"Raster formats are written at {IMAGE_DPI} dpi."
+        )
+        self._save_image_button.setShortcut(QKeySequence.StandardKey.Save)
+        self._save_image_button.clicked.connect(self._save_image)
 
         # One setting for both tabs. A fit you have hidden on one plot you
         # almost always want hidden on the other -- the reason to hide it is
@@ -211,6 +236,7 @@ class CestPanel(QWidget):
         header = QHBoxLayout()
         header.addWidget(open_button)
         header.addWidget(reload_button)
+        header.addWidget(self._save_image_button)
         header.addWidget(QLabel("Source:"))
         header.addWidget(self._source, 1)
         header.addWidget(self._show_fits)
@@ -363,6 +389,9 @@ class CestPanel(QWidget):
         )
         self._z_ppm = QCheckBox("Plot offset in ppm")
         self._z_ppm.setChecked(True)
+        # The range boxes hold values in the CURRENT unit, so switching unit
+        # must reseed them -- otherwise a ppm window is applied as Hz.
+        self._z_ppm.toggled.connect(self._on_z_units_changed)
         self._z_dips = QCheckBox("Fit deepest dip (Lorentzian)")
         self._z_dips.setChecked(True)
         self._z_errors = QCheckBox("Error bars from spectrum noise")
@@ -466,16 +495,30 @@ class CestPanel(QWidget):
             "Each keeps its own I0 normalisation, so experiments with\n"
             "different gain, scans or concentration stay comparable."
         )
+        add_button = QPushButton("Add experiment\u2026")
+        add_button.setToolTip(
+            "Load another CEST experiment straight onto this plot, measured\n"
+            "with the current half-width, measurement and reference\n"
+            "settings. The experiment already loaded stays as it is."
+        )
+        add_button.clicked.connect(self._choose_overlay)
         keep_button = QPushButton("Keep on plot")
+        keep_button.setToolTip("Keep the current Z-spectrum as an overlay.")
         keep_button.clicked.connect(self._keep_overlay)
         drop_button = QPushButton("Remove")
         drop_button.clicked.connect(self._drop_overlay)
         clear_button = QPushButton("Clear all")
         clear_button.clicked.connect(self._clear_overlays)
-        overlay_buttons = QHBoxLayout()
-        overlay_buttons.addWidget(keep_button)
-        overlay_buttons.addWidget(drop_button)
-        overlay_buttons.addWidget(clear_button)
+        # Two rows: four buttons side by side would set the minimum width
+        # of the whole control column.
+        overlay_buttons = QVBoxLayout()
+        top_row, bottom_row = QHBoxLayout(), QHBoxLayout()
+        top_row.addWidget(add_button)
+        top_row.addWidget(keep_button)
+        bottom_row.addWidget(drop_button)
+        bottom_row.addWidget(clear_button)
+        overlay_buttons.addLayout(top_row)
+        overlay_buttons.addLayout(bottom_row)
 
         build_button = QPushButton("Build Z-spectrum")
         build_button.clicked.connect(self._build_z)
@@ -491,18 +534,39 @@ class CestPanel(QWidget):
         self._z_result = QPlainTextEdit()
         self._z_result.setReadOnly(True)
         self._z_result.setPlaceholderText("Z-spectrum summary appears here.")
+        self._z_result.setMinimumHeight(160)
 
         controls = QWidget()
         controls_layout = QVBoxLayout(controls)
         controls_layout.addLayout(form)
         controls_layout.addLayout(buttons)
+        controls_layout.addWidget(QLabel("Resonances"))
+        controls_layout.addWidget(self._peak_snr)
+        controls_layout.addWidget(self._peak_list)
+        controls_layout.addWidget(QLabel("Compare (overlaid Z-spectra)"))
+        controls_layout.addWidget(self._overlay_list)
+        controls_layout.addLayout(overlay_buttons)
         controls_layout.addWidget(QLabel("Result"))
         controls_layout.addWidget(self._z_result, 1)
+
+        # Scrollable, so the controls stay reachable on a laptop screen
+        # instead of squeezing the result box to nothing.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(controls)
+        # A scroll area reports a tiny minimum width, so the splitter would
+        # otherwise crop the controls; pin it to what they actually need.
+        scroll.setMinimumWidth(
+            controls.minimumSizeHint().width()
+            + scroll.verticalScrollBar().sizeHint().width()
+        )
 
         self._z_plot = _Plot(wheel_zoom=True)
         self._z_plot.zoomed.connect(self._sync_z_limit_boxes)
         split = QSplitter(Qt.Horizontal)
-        split.addWidget(controls)
+        split.addWidget(scroll)
         split.addWidget(self._z_plot)
         split.setStretchFactor(1, 1)
         split.setSizes([330, 700])
@@ -523,8 +587,7 @@ class CestPanel(QWidget):
         if self._fit is not None and getattr(self, "_n_series", None) is not None:
             t, y = self._n_series
             self._draw_nutation(t, y, self._fit)
-        if self._z_display is not None:
-            self._draw_z(self._z_display, self._z_fitted)
+        self._redraw_z()
 
     def _span_text(self, centre: float, half: float) -> str:
         """The window a centre and half-width actually produce.
@@ -580,7 +643,18 @@ class CestPanel(QWidget):
         self._data_path = expno
         self._offsets = None
         self._fit = None
+        self._n_series = None
         self._z = None
+        # Nothing drawn from the previous experiment may survive the load:
+        # "Show fitted curves" or "Save image" would otherwise redraw or
+        # save the OLD dataset under the new one's name. Kept overlays are
+        # independent of the loaded rows and stay.
+        self._z_display = None
+        self._z_fitted = None
+        self._peak_curves = []
+        self._n_plot.clear()
+        self._n_plot.draw_idle()
+        self._redraw_z(reseed=True)
 
         kind = classify(str(data.acqus.get("PULPROG", "")))
         notes = list(data.notes)
@@ -967,25 +1041,8 @@ class CestPanel(QWidget):
         try:
             centre, half = self._z_centre.value(), self._z_half.value()
             mode = self._z_mode.currentData()
-            intensity = measure_rows(rows, data.ppm, centre, half, mode=mode)
-            errors = None
-            if self._z_errors.isChecked():
-                with contextlib.suppress(CestError):
-                    exclude = max(4.0 * half, half + 0.05)
-                    sigma = row_noise(rows, data.ppm, centre, exclude)
-                    if mode == "integral":
-                        # An integral of n points accumulates n independent
-                        # noise samples, so its error grows as sqrt(n) --
-                        # using the per-point sigma unchanged would understate
-                        # it by an order of magnitude on a wide window.
-                        lo, hi = window_indices(data.ppm, centre, half)
-                        sigma = sigma * math.sqrt(max(hi - lo, 1))
-                    errors = sigma
             threshold = self._z_ref.value() or None
-            z = normalise_z(
-                intensity, offsets, sfo1_mhz=data.sfo1_mhz,
-                reference_min_hz=threshold, intensity_error=errors,
-            )
+            z = self._measure_z(rows, data.ppm, offsets, data.sfo1_mhz, centre)
         except CestError as exc:
             self._z_result.setPlainText(f"Could not build the Z-spectrum: {exc}")
             return
@@ -1157,8 +1214,57 @@ class CestPanel(QWidget):
 
         self._z_display = display
         self._z_fitted = None if display is not z else fitted
-        self._seed_z_limits(display)
-        self._draw_z(display, self._z_fitted)
+        self._redraw_z(reseed=True)
+
+    def _measure_z(self, rows, ppm, offsets, sfo1_mhz, centre):
+        """One Z-spectrum with the panel's current settings.
+
+        Shared by the loaded experiment and by "Add experiment", so an
+        overlay is measured exactly the way the current curve is -- a
+        comparison made with two different windows or modes would show a
+        difference that is in the settings, not the sample.
+        """
+        half = self._z_half.value()
+        mode = self._z_mode.currentData()
+        intensity = measure_rows(rows, ppm, centre, half, mode=mode)
+        errors = None
+        if self._z_errors.isChecked():
+            with contextlib.suppress(CestError):
+                exclude = max(4.0 * half, half + 0.05)
+                sigma = row_noise(rows, ppm, centre, exclude)
+                if mode == "integral":
+                    # An integral of n points accumulates n independent
+                    # noise samples, so its error grows as sqrt(n) --
+                    # using the per-point sigma unchanged would understate
+                    # it by an order of magnitude on a wide window.
+                    lo, hi = window_indices(ppm, centre, half)
+                    sigma = sigma * math.sqrt(max(hi - lo, 1))
+                errors = sigma
+        return normalise_z(
+            intensity, offsets, sfo1_mhz=sfo1_mhz,
+            reference_min_hz=self._z_ref.value() or None,
+            intensity_error=errors,
+        )
+
+    def _redraw_z(self, reseed: bool = False) -> None:
+        """Draw whatever the Z tab currently holds.
+
+        The current curve with its overlays, or the overlays alone when no
+        Z-spectrum is built for the loaded experiment -- a comparison must
+        not vanish just because the experiment on top of it changed. With
+        nothing at all, the plot is emptied rather than left stale.
+        """
+        if self._z_display is None and not self._overlays:
+            self._z_axes_ready = False
+            self._z_plot.clear()
+            self._z_plot.draw_idle()
+            return
+        if reseed:
+            self._seed_z_limits(self._z_display)
+        self._draw_z(self._z_display, self._z_fitted)
+
+    def _on_z_units_changed(self) -> None:
+        self._redraw_z(reseed=True)
 
     def _draw_z(self, z, fitted) -> None:
         from ..domain.cest import lorentzian_dip
@@ -1167,20 +1273,34 @@ class CestPanel(QWidget):
         plot.clear()
         axes = plot.axes
         use_ppm = self._z_ppm.isChecked()
-        x = z.offsets_ppm if use_ppm else z.offsets_hz
-        interior = ~z.reference_mask
-        errors = z.error
+        show_errors = self._z_errors.isChecked()
 
         # Kept spectra first, so the current one draws on top of them.
         for index, (name, kept) in enumerate(self._overlays):
             kx = kept.offsets_ppm if use_ppm else kept.offsets_hz
             keep_interior = ~kept.reference_mask
-            axes.plot(
-                kx[keep_interior], kept.intensity[keep_interior],
-                "-", lw=1.0, alpha=0.75,
-                color=OVERLAY_COLOURS[index % len(OVERLAY_COLOURS)],
-                label=name,
-            )
+            colour = OVERLAY_COLOURS[index % len(OVERLAY_COLOURS)]
+            kerr = kept.error
+            if (show_errors and kerr is not None
+                    and np.any(np.isfinite(kerr[keep_interior]))):
+                axes.errorbar(
+                    kx[keep_interior], kept.intensity[keep_interior],
+                    yerr=kerr[keep_interior], fmt="o-", ms=3, lw=1.0,
+                    elinewidth=0.7, capsize=0, alpha=0.8, color=colour,
+                    ecolor=colour, label=name,
+                )
+            else:
+                axes.plot(
+                    kx[keep_interior], kept.intensity[keep_interior],
+                    "o-", ms=3, lw=1.0, alpha=0.8, color=colour, label=name,
+                )
+
+        if z is None:
+            self._finish_z_axes(axes, use_ppm)
+            return
+        x = z.offsets_ppm if use_ppm else z.offsets_hz
+        interior = ~z.reference_mask
+        errors = z.error if show_errors else None
 
         for index, (name, curve) in enumerate(self._peak_curves):
             cx = curve.offsets_ppm if use_ppm else curve.offsets_hz
@@ -1210,7 +1330,7 @@ class CestPanel(QWidget):
         if z.reference_mask.any():
             axes.plot(x[z.reference_mask], z.intensity[z.reference_mask], "s",
                       ms=6, color="#e0a458", label="I$_0$ reference")
-        if fitted is not None and self._show_fits.isChecked():
+        if fitted is not None and self._show_fits.isChecked() and interior.any():
             dense = np.linspace(float(x[interior].min()), float(x[interior].max()), 500)
             centre = fitted.centre_ppm if use_ppm else fitted.centre_hz
             width = fitted.width_ppm if use_ppm else fitted.width_hz
@@ -1221,10 +1341,14 @@ class CestPanel(QWidget):
         # dipping below it is worth a second look, one inside it is not.
         sigma = z.noise
         if (not self._overlays and not self._peak_curves
-                and math.isfinite(sigma) and sigma > 0):
+                and math.isfinite(sigma) and sigma > 0 and interior.any()):
             baseline = float(np.median(z.intensity[interior]))
             axes.axhspan(baseline - sigma, baseline + sigma,
                          color="#999", alpha=0.15, lw=0, label="\u00b11 sigma")
+        self._finish_z_axes(axes, use_ppm)
+
+    def _finish_z_axes(self, axes, use_ppm: bool) -> None:
+        """Guides, labels, legend and limits common to every Z plot."""
         axes.axhline(1.0, color="k", lw=0.5, ls=":")
         axes.axvline(0.0, color="k", lw=0.5, ls=":")
         # NMR convention: frequency increases to the LEFT.
@@ -1238,7 +1362,7 @@ class CestPanel(QWidget):
                     fontsize=7 if (self._overlays or self._peak_curves) else 8)
         self._z_axes_ready = True
         self._apply_z_limits()
-        plot.draw_idle()
+        self._z_plot.draw_idle()
 
     def _seed_z_limits(self, z) -> None:
         """Fill the range boxes from the data without triggering a redraw loop.
@@ -1249,13 +1373,16 @@ class CestPanel(QWidget):
         valueChanged, and four of those would redraw the plot four times.
         """
         use_ppm = self._z_ppm.isChecked()
-        xs = [z.offsets_ppm if use_ppm else z.offsets_hz]
-        ys = [z.intensity]
-        for _, kept in self._overlays:
-            xs.append(kept.offsets_ppm if use_ppm else kept.offsets_hz)
-            ys.append(kept.intensity)
-        x = np.concatenate(xs)
-        y = np.concatenate(ys)
+        curves = ([z] if z is not None else []) + [c for _, c in self._overlays]
+        curves += [c for _, c in self._peak_curves]
+        if not curves:
+            return
+        x = np.concatenate([c.offsets_ppm if use_ppm else c.offsets_hz
+                            for c in curves])
+        y = np.concatenate([c.intensity for c in curves])
+        x, y = x[np.isfinite(x)], y[np.isfinite(y)]
+        if x.size == 0 or y.size == 0:
+            return
         pad_y = 0.05 * (float(np.ptp(y)) or 1.0)
         for box, value in (
             (self._z_xmin, float(np.min(x))), (self._z_xmax, float(np.max(x))),
@@ -1307,34 +1434,141 @@ class CestPanel(QWidget):
         if self._z is None:
             self._z_result.setPlainText("Build a Z-spectrum before keeping it.")
             return
-        name = Path(self._data_path).parent.name or str(self._data_path)
-        label = f"{name}/{Path(self._data_path).name}"
+        self._add_overlay(self._overlay_label(self._data_path, self._data.acqus),
+                          self._z)
+
+    def _overlay_label(self, path, acqus) -> str:
+        path = Path(path)
+        label = f"{path.parent.name or path}/{path.name}"
         # A field and duration suffix, because the usual reason to overlay is
         # a power or saturation-time series and the expno alone does not say
         # which is which.
-        field = _get_float(self._data.acqus, "CNST", 25)
-        d18 = _get_float(self._data.acqus, "D", 18)
+        field = _get_float(acqus, "CNST", 25)
+        d18 = _get_float(acqus, "D", 18)
         if field > 0:
             label += f"  {field:.0f} Hz"
         if d18 > 0:
             label += f" / {d18:g} s"
-        if any(existing == label for existing, _ in self._overlays):
-            label = f"{label} ({len(self._overlays) + 1})"
-        self._overlays.append((label, self._z))
-        self._overlay_list.addItem(QListWidgetItem(label))
-        self._build_z()
+        return label
+
+    def _add_overlay(self, label: str, z) -> str:
+        """Append one curve, with a legend label no other overlay has."""
+        taken = {existing for existing, _ in self._overlays}
+        unique, n = label, 2
+        while unique in taken:
+            unique = f"{label} ({n})"
+            n += 1
+        self._overlays.append((unique, z))
+        self._overlay_list.addItem(QListWidgetItem(unique))
+        # Show the result: with nothing loaded yet the panel sits on the
+        # calibration tab, where the new curve would be invisible.
+        self._tabs.setCurrentIndex(1)
+        # Redraw only: keeping a curve must not refit the current one or
+        # rewrite its result text.
+        self._redraw_z(reseed=True)
+        return unique
+
+    def add_overlay_from(self, expno: Path) -> str:
+        """Measure another CEST experiment and overlay it; return a message.
+
+        The loaded experiment is left alone. The peak measured is the one
+        nearest the current main peak when there is one (same sample, same
+        resonance), otherwise the one nearest that experiment's own carrier.
+        Offsets stay relative to each experiment's own carrier, which is
+        what makes Z-spectra from different sessions comparable.
+        """
+        expno = Path(expno)
+        try:
+            data = load_pseudo_2d(expno, prefer=self._source.currentData())
+        except Exception as exc:
+            return f"{expno.name}: could not load ({exc})"
+        kind = classify(str(data.acqus.get("PULPROG", "")))
+        if kind != "cest":
+            return f"{expno.name}: not a CEST experiment ({kind})"
+        try:
+            offsets, _ = read_offsets(expno, data.sfo1_mhz)
+        except CestError as exc:
+            return f"{expno.name}: frequency list unreadable ({exc})"
+        if offsets is None:
+            return f"{expno.name}: no FQ1LIST, cannot build a Z-spectrum"
+        rows = data.rows
+        if rows.shape[0] > offsets.size:
+            return (f"{expno.name}: {rows.shape[0]} rows but only "
+                    f"{offsets.size} offsets; not overlaid")
+        if rows.shape[0] < 2:
+            return f"{expno.name}: fewer than two rows; switch Source to 'Raw ser'"
+        note = ""
+        if rows.shape[0] < offsets.size:
+            note = f" (PARTIAL: {rows.shape[0]} of {offsets.size} offsets)"
+            offsets = offsets[:rows.shape[0]]
+        try:
+            reference = rows[int(np.argmax(np.abs(rows).sum(axis=1)))]
+            try:
+                carrier = carrier_ppm(
+                    data.sfo1_mhz, float(data.procs.get("SF", 0.0) or 0.0)
+                )
+            except CestError:
+                carrier = 0.0
+            peaks = find_peaks_ppm(reference, data.ppm,
+                                   min_snr=self._peak_snr.value())
+            target = self._z_centre.value() if self._data is not None else carrier
+            centre = nearest_peak_ppm(peaks, target)
+            if centre is None:
+                centre = find_peak_ppm(reference, data.ppm)
+            z = self._measure_z(rows, data.ppm, offsets, data.sfo1_mhz, centre)
+        except CestError as exc:
+            return f"{expno.name}: could not build the Z-spectrum ({exc})"
+        label = self._add_overlay(
+            self._overlay_label(expno, data.acqus), z
+        )
+        return f"added {label}, peak {centre:+.4f} ppm{note}"
+
+    def compare(self, expnos) -> None:
+        """Load the first experiment and overlay the rest on its Z-spectrum."""
+        # Deduplicated in order: a selection can report one row per column.
+        expnos = list(dict.fromkeys(Path(p) for p in expnos))
+        if not expnos:
+            return
+        # A fresh comparison replaces the previous one; reopening the panel
+        # on the same selection must not stack a second copy of every curve.
+        self._overlays.clear()
+        self._overlay_list.clear()
+        self.load(expnos[0])
+        if self._data is not None and self._offsets is not None:
+            self._build_z()
+        messages = [self.add_overlay_from(p) for p in expnos[1:]]
+        if messages:
+            self._append_note("\n".join(messages))
+
+    def _append_note(self, text: str) -> None:
+        current = self._notes.toPlainText()
+        self._notes.setPlainText(f"{current}\n{text}" if current else text)
+
+    def _choose_overlay(self) -> None:                    # pragma: no cover
+        directory = QFileDialog.getExistingDirectory(
+            self, "Choose a CEST experiment to overlay (the expno folder)"
+        )
+        if directory:
+            self._append_note(self.add_overlay_from(Path(directory)))
 
     def _drop_overlay(self) -> None:
-        for item in self._overlay_list.selectedItems():
-            row = self._overlay_list.row(item)
+        rows = sorted(
+            {self._overlay_list.row(item)
+             for item in self._overlay_list.selectedItems()},
+            reverse=True,
+        )
+        if not rows:
+            return
+        # Highest first, so removing one never shifts the next index.
+        for row in rows:
             self._overlay_list.takeItem(row)
             del self._overlays[row]
-        self._build_z()
+        self._redraw_z(reseed=True)
 
     def _clear_overlays(self) -> None:
         self._overlays.clear()
         self._overlay_list.clear()
-        self._build_z()
+        self._redraw_z(reseed=True)
 
     def _on_z_scroll(self, event) -> None:
         """Wheel zooms X about the cursor; shift-wheel zooms Y.
@@ -1388,11 +1622,85 @@ class CestPanel(QWidget):
 
     def _reset_z_limits(self) -> None:
         """Back to the full data range."""
-        if self._z is None:
+        if self._z_display is None and not self._overlays:
             return
-        display = self._z
-        self._seed_z_limits(display)
+        self._seed_z_limits(self._z_display)
         self._apply_z_limits()
+
+    # ---------------------------------------------------------------- image
+
+    def _current_plot(self) -> _Plot:
+        return self._n_plot if self._tabs.currentIndex() == 0 else self._z_plot
+
+    @staticmethod
+    def _plot_has_content(plot: _Plot) -> bool:
+        axes = plot.axes
+        return bool(axes.lines or axes.collections or axes.patches)
+
+    def default_image_name(self) -> str:
+        """expno-based name, safe on Windows as well as macOS."""
+        kind = "nutation" if self._tabs.currentIndex() == 0 else "zspectrum"
+        if self._data_path is not None:
+            path = Path(self._data_path)
+            stem = f"{path.parent.name}_{path.name}_{kind}" if path.parent.name \
+                else f"{path.name}_{kind}"
+        else:
+            stem = f"cest_{kind}"
+        # Characters Windows forbids in file names, plus whitespace.
+        stem = re.sub(r'[<>:"/\\|?*\s]+', "_", stem).strip("._") or "cest"
+        return stem + ".png"
+
+    def save_image(self, path, dpi: int = IMAGE_DPI) -> Path:
+        """Write the current tab's plot to `path`; return the path written.
+
+        The format follows the suffix. A missing or unsupported suffix gets
+        .png rather than failing, because a name typed without one is the
+        common case on both platforms. Raises CestError when there is
+        nothing to save or the file cannot be written.
+        """
+        plot = self._current_plot()
+        if not self._plot_has_content(plot):
+            raise CestError("nothing is plotted on this tab yet")
+        path = Path(path)
+        if path.suffix.lower() not in IMAGE_SUFFIXES:
+            path = path.with_name(path.name + ".png")
+        fmt = path.suffix.lower().lstrip(".")
+        if fmt == "tif":
+            fmt = "tiff"
+        try:
+            # White, not transparent: a transparent PNG pasted into a dark
+            # slide loses its black axes. The on-screen figure is untouched.
+            plot.figure.savefig(path, format=fmt, dpi=dpi,
+                                facecolor="white", edgecolor="none")
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise CestError(f"could not write {path}: {exc}") from exc
+        return path
+
+    def _save_image(self) -> None:                        # pragma: no cover
+        if not self._plot_has_content(self._current_plot()):
+            QMessageBox.information(self, "CEST", "Nothing is plotted on this tab yet.")
+            return
+        start = self._last_image_dir or (
+            Path(self._data_path).parent if self._data_path is not None
+            else Path.home()
+        )
+        name, chosen = QFileDialog.getSaveFileName(
+            self, "Save plot image", str(start / self.default_image_name()),
+            ";;".join(label for label, _ in IMAGE_FILTERS),
+        )
+        if not name:
+            return
+        path = Path(name)
+        # Some dialogs return a name without the suffix of the chosen filter.
+        if path.suffix.lower() not in IMAGE_SUFFIXES:
+            suffix = dict(IMAGE_FILTERS).get(chosen, ".png")
+            path = path.with_name(path.name + suffix)
+        try:
+            written = self.save_image(path)
+        except CestError as exc:
+            QMessageBox.warning(self, "CEST", str(exc))
+            return
+        self._last_image_dir = written.parent
 
     # --------------------------------------------------------------- export
 

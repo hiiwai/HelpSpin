@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.9.3 - 2026-09-30
+
+### Added: Save image in the CEST panel
+
+A "Save image…" button (Ctrl+S / Cmd+S) saves the plot on the current tab,
+nutation or Z-spectrum, as PNG, PDF, SVG or TIFF; raster formats at 300 dpi
+on a white background. The default file name is built from the experiment
+(`<name>_<expno>_zspectrum.png`) with characters Windows forbids replaced. A
+name typed without a suffix gets `.png`. The on-screen view is not changed.
+Saving an empty tab is refused with a message.
+
+### Added / fixed: comparing CEST experiments on one plot
+
+The overlay list and its buttons (and the resonance list) had been built
+since 0.8.0 but were never placed in the window, so they could not be used.
+They are now shown under "Compare (overlaid Z-spectra)" and "Resonances",
+and the control column scrolls on small screens.
+
+- "Add experiment…" measures another CEST expno with the CURRENT half-width,
+  measurement, reference and error-bar settings and overlays it, leaving the
+  loaded experiment untouched. The peak nearest the current main peak is
+  used (nearest the carrier when nothing is loaded). Non-CEST data, a
+  missing FQ1LIST, or more rows than offsets are reported in the notes, not
+  raised; a partial series is flagged.
+- Selecting several expnos in the browser and opening CEST loads the first
+  and overlays the rest; reopening replaces the comparison instead of
+  stacking duplicates.
+- Overlays are drawn with points and, when enabled, error bars.
+- Keep / Remove / Clear now redraw without refitting the current curve.
+  Previously they re-ran the fit, and with no Z-spectrum built a removed
+  overlay stayed on the plot.
+- Overlays remain visible after loading another experiment, before its
+  Z-spectrum is built.
+
+### Fixed
+
+- Loading a new experiment left the previous plots in place, so "Show
+  fitted curves" or Save could redraw or save the old data.
+- "Plot offset in ppm" did nothing until the next build, and switching it
+  left the X range boxes in the old unit. It now redraws and reseeds.
+- Unticking "Error bars" now hides them without a rebuild.
+- Removing several selected overlays deletes by index highest first.
+
+1131 tests (up from 1104), 27 new in `tests/test_cest_compare_and_save.py`.
+
 ## 0.9.2 - 2026-09-25
 
 ### Fixed: the marker menu appeared but nothing could be selected
