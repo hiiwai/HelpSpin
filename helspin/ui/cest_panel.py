@@ -17,6 +17,7 @@ reliably, so construction and showing stay separate.
 from __future__ import annotations
 
 import contextlib
+import json
 import math
 import re
 from pathlib import Path
@@ -37,6 +38,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -71,6 +73,8 @@ from ..infrastructure.cest_reader import (
     read_offsets,
 )
 from ..services.cest_fit import fit_dip, fit_two_dips, polish_nutation
+from .dataset_model import MIME_DATASET
+from .figure_export import EXPORT_FILTERS, save_figure
 
 MEASURE_MODES = (("Integral", "integral"), ("Peak height", "height"),
                  ("Fixed point", "fixed"))
@@ -82,17 +86,16 @@ OVERLAY_COLOURS = (
     "#00838f", "#a8442a", "#5a6b7c",
 )
 
-# Image formats offered by "Save image". Every one is written by matplotlib's
-# own backends (TIFF through Pillow, a matplotlib dependency), so nothing here
-# needs a platform library -- the same list works on Windows and macOS.
-IMAGE_FILTERS = (
-    ("PNG image (*.png)", ".png"),
-    ("PDF document (*.pdf)", ".pdf"),
-    ("SVG drawing (*.svg)", ".svg"),
-    ("TIFF image (*.tif *.tiff)", ".tif"),
-)
-IMAGE_SUFFIXES = {".png", ".pdf", ".svg", ".tif", ".tiff"}
+# The SAME format list and writer as the main canvas's "Save image"
+# (figure_export.py). Every format is written by matplotlib (TIFF/JPEG via
+# Pillow) or python-pptx -- no platform library, identical on Windows and macOS.
+IMAGE_FILTERS = tuple(EXPORT_FILTERS)
+IMAGE_SUFFIXES = {f".{ext}" for _, ext in IMAGE_FILTERS} | {".tiff", ".jpeg"}
 IMAGE_DPI = 300
+
+# Same defaults as the main canvas's markers; the main window passes its
+# current (Preferences) style in, so both canvases look alike.
+DEFAULT_MARKER_STYLE = {"color": "#888888", "width": 0.6, "dash": "--", "alpha": 0.8}
 
 
 class _Plot(FigureCanvasQTAgg):
@@ -118,6 +121,17 @@ class _Plot(FigureCanvasQTAgg):
         self._wheel_zoom = wheel_zoom
         if wheel_zoom:
             self.setFocusPolicy(Qt.WheelFocus)
+        # Right-click menu, as on the main spectrum canvas. The panel builds
+        # the menu, because only it knows which actions apply.
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        # Pinned markers in DATA coordinates, as on the main canvas, so they
+        # stay on the feature through zoom and redraw.
+        self.markers: list[tuple[str, float]] = []
+        self.marker_style = dict(DEFAULT_MARKER_STYLE)
+        self.x_format = "{:.3f}"
+        self.y_format = "{:.3f}"
+        self.context_point: tuple[float, float] | None = None
+        self._marker_artists: list = []
 
     def wheelEvent(self, event):
         """Zoom x about the cursor; with Shift held, zoom y instead.
@@ -169,9 +183,113 @@ class _Plot(FigureCanvasQTAgg):
         event.accept()
 
     def clear(self):
+        """Clear the drawing. Markers are kept and redrawn by draw_markers."""
         self.axes.clear()
         if self.residual_axes is not None:
             self.residual_axes.clear()
+        self._marker_artists = []
+
+    def has_content(self) -> bool:
+        axes = self.axes
+        return bool(axes.lines or axes.collections or axes.patches)
+
+    # ------------------------------------------------------------ markers
+
+    def data_point_at(self, pos):
+        """Widget position -> data coordinates of the main axes, or None.
+
+        Qt measures y from the top and in LOGICAL pixels; matplotlib from
+        the bottom in DEVICE pixels. Flip and scale by the pixel ratio, or
+        markers land mirrored -- or off by 2x on a Retina screen.
+        """
+        if not self.has_content():
+            return None
+        ratio = float(self.devicePixelRatioF() or 1.0)
+        point = (pos.x() * ratio, self.figure.bbox.height - pos.y() * ratio)
+        if not self.axes.bbox.contains(*point):
+            return None
+        x, y = self.axes.transData.inverted().transform(point)
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return None
+        return float(x), float(y)
+
+    def add_marker(self, orientation: str, value: float | None = None) -> bool:
+        """Pin a marker; value defaults to the last right-click position."""
+        if orientation not in ("vertical", "horizontal"):
+            raise ValueError(f"unknown marker orientation {orientation!r}")
+        if value is None:
+            if self.context_point is None:
+                return False
+            value = self.context_point[0 if orientation == "vertical" else 1]
+        if not math.isfinite(value):
+            return False
+        self.markers.append((orientation, float(value)))
+        self.draw_markers()
+        return True
+
+    def remove_nearest_marker(self) -> bool:
+        """Drop the marker nearest the last right-click, in AXES fractions."""
+        if not self.markers or self.context_point is None:
+            return False
+        x, y = self.context_point
+        left, right = self.axes.get_xlim()
+        bottom, top = self.axes.get_ylim()
+        span_x = abs(right - left) or 1.0
+        span_y = abs(top - bottom) or 1.0
+
+        def distance(marker):
+            orientation, value = marker
+            if orientation == "vertical":
+                return abs(value - x) / span_x
+            return abs(value - y) / span_y
+
+        self.markers.remove(min(self.markers, key=distance))
+        self.draw_markers()
+        return True
+
+    def clear_markers(self) -> None:
+        if self.markers:
+            self.markers.clear()
+            self.draw_markers()
+
+    def set_marker_style(self, style: dict) -> None:
+        for key in ("color", "width", "dash", "alpha"):
+            if style and style.get(key) is not None:
+                self.marker_style[key] = style[key]
+        self.draw_markers()
+
+    def draw_markers(self) -> None:
+        """(Re)draw every marker, labelled with its value, on the main axes."""
+        for artist in self._marker_artists:
+            with contextlib.suppress(ValueError, NotImplementedError, AttributeError):
+                artist.remove()
+        self._marker_artists = []
+        if self.has_content():
+            style = self.marker_style
+            line = dict(color=style["color"], linewidth=style["width"],
+                        linestyle=style["dash"], alpha=style["alpha"])
+            for orientation, value in self.markers:
+                if orientation == "vertical":
+                    self._marker_artists += [
+                        self.axes.axvline(value, **line),
+                        self.axes.text(
+                            value, 1.005, self.x_format.format(value),
+                            transform=self.axes.get_xaxis_transform(),
+                            ha="center", va="bottom", fontsize=8,
+                            color=style["color"], clip_on=False,
+                        ),
+                    ]
+                else:
+                    self._marker_artists += [
+                        self.axes.axhline(value, **line),
+                        self.axes.text(
+                            1.002, value, self.y_format.format(value),
+                            transform=self.axes.get_yaxis_transform(),
+                            ha="left", va="center", fontsize=8,
+                            color=style["color"], clip_on=False,
+                        ),
+                    ]
+        self.draw_idle()
 
 
 class CestPanel(QWidget):
@@ -214,11 +332,12 @@ class CestPanel(QWidget):
         # One button for both tabs: it saves whichever plot is showing.
         self._save_image_button = QPushButton("Save image\u2026")
         self._save_image_button.setToolTip(
-            "Save the plot on the current tab as PNG, PDF, SVG or TIFF.\n"
-            f"Raster formats are written at {IMAGE_DPI} dpi."
+            "Save the plot on the current tab (PNG, JPEG, TIFF, SVG, PDF,\n"
+            f"EPS, PS or PowerPoint; raster at {IMAGE_DPI} dpi). Also on the\n"
+            "plot's right-click menu."
         )
         self._save_image_button.setShortcut(QKeySequence.StandardKey.Save)
-        self._save_image_button.clicked.connect(self._save_image)
+        self._save_image_button.clicked.connect(lambda: self._save_image())
 
         # One setting for both tabs. A fit you have hidden on one plot you
         # almost always want hidden on the other -- the reason to hide it is
@@ -251,6 +370,15 @@ class CestPanel(QWidget):
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_nutation_tab(), "Calibration (nutation)")
         self._tabs.addTab(self._build_z_tab(), "Z-spectrum")
+
+        for plot in (self._n_plot, self._z_plot):
+            plot.customContextMenuRequested.connect(
+                lambda pos, plot=plot: self._on_plot_menu(plot, pos)
+            )
+        # Datasets dragged from the browser can be dropped anywhere on the
+        # panel, as on the main canvas. Qt delivers a drop to the nearest
+        # ancestor that accepts drops, so the plot needs nothing itself.
+        self.setAcceptDrops(True)
 
         layout = QVBoxLayout(self)
         layout.addLayout(header)
@@ -883,7 +1011,8 @@ class CestPanel(QWidget):
         residual_axes.plot(t * 1e3, residual, "o-", ms=3, lw=0.8, color="#777")
         residual_axes.set_xlabel("pulse duration (ms)")
         residual_axes.set_ylabel("resid")
-        plot.draw_idle()
+        plot.x_format, plot.y_format = "{:.2f} ms", "{:.4g}"
+        plot.draw_markers()
 
     # ------------------------------------------------------------ Z-spectrum
 
@@ -1263,7 +1392,27 @@ class CestPanel(QWidget):
             self._seed_z_limits(self._z_display)
         self._draw_z(self._z_display, self._z_fitted)
 
-    def _on_z_units_changed(self) -> None:
+    def _on_z_units_changed(self, to_ppm: bool = True) -> None:
+        """Convert vertical markers to the new unit, then redraw.
+
+        A marker is a position in DATA units; left alone, a marker at
+        -0.07 ppm would become -0.07 Hz. Offsets are relative to each
+        experiment's own carrier, so one spectrometer frequency converts
+        them all; without any curve there is nothing to convert with, and
+        the vertical markers are dropped rather than left meaningless.
+        """
+        curves = ([self._z_display] if self._z_display is not None else []) \
+            + [c for _, c in self._overlays]
+        sfo1 = next((c.sfo1_mhz for c in curves if c.sfo1_mhz > 0), 0.0)
+        plot = self._z_plot
+        converted = []
+        for orientation, value in plot.markers:
+            if orientation == "vertical":
+                if sfo1 <= 0:
+                    continue
+                value = value / sfo1 if to_ppm else value * sfo1
+            converted.append((orientation, value))
+        plot.markers = converted
         self._redraw_z(reseed=True)
 
     def _draw_z(self, z, fitted) -> None:
@@ -1362,7 +1511,9 @@ class CestPanel(QWidget):
                     fontsize=7 if (self._overlays or self._peak_curves) else 8)
         self._z_axes_ready = True
         self._apply_z_limits()
-        self._z_plot.draw_idle()
+        self._z_plot.x_format = "{:.3f} ppm" if use_ppm else "{:.0f} Hz"
+        self._z_plot.y_format = "{:.3f}"
+        self._z_plot.draw_markers()
 
     def _seed_z_limits(self, z) -> None:
         """Fill the range boxes from the data without triggering a redraw loop.
@@ -1634,12 +1785,13 @@ class CestPanel(QWidget):
 
     @staticmethod
     def _plot_has_content(plot: _Plot) -> bool:
-        axes = plot.axes
-        return bool(axes.lines or axes.collections or axes.patches)
+        # Marker lines alone are not a plot: they only exist on top of data.
+        return plot.has_content()
 
-    def default_image_name(self) -> str:
+    def default_image_name(self, plot=None) -> str:
         """expno-based name, safe on Windows as well as macOS."""
-        kind = "nutation" if self._tabs.currentIndex() == 0 else "zspectrum"
+        plot = plot if plot is not None else self._current_plot()
+        kind = "nutation" if plot is self._n_plot else "zspectrum"
         if self._data_path is not None:
             path = Path(self._data_path)
             stem = f"{path.parent.name}_{path.name}_{kind}" if path.parent.name \
@@ -1650,42 +1802,40 @@ class CestPanel(QWidget):
         stem = re.sub(r'[<>:"/\\|?*\s]+', "_", stem).strip("._") or "cest"
         return stem + ".png"
 
-    def save_image(self, path, dpi: int = IMAGE_DPI) -> Path:
-        """Write the current tab's plot to `path`; return the path written.
+    def save_image(self, path, dpi: int = IMAGE_DPI, plot=None) -> Path:
+        """Write a plot to `path`; return the path written.
 
-        The format follows the suffix. A missing or unsupported suffix gets
-        .png rather than failing, because a name typed without one is the
-        common case on both platforms. Raises CestError when there is
-        nothing to save or the file cannot be written.
+        `plot` defaults to the one on the current tab. The format follows the
+        suffix; a missing or unknown suffix gets .png rather than failing.
+        Vector formats keep text editable, as on the main canvas. Raises
+        CestError when nothing is plotted or the file cannot be written.
         """
-        plot = self._current_plot()
+        plot = plot if plot is not None else self._current_plot()
         if not self._plot_has_content(plot):
             raise CestError("nothing is plotted on this tab yet")
         path = Path(path)
         if path.suffix.lower() not in IMAGE_SUFFIXES:
             path = path.with_name(path.name + ".png")
-        fmt = path.suffix.lower().lstrip(".")
-        if fmt == "tif":
-            fmt = "tiff"
         try:
-            # White, not transparent: a transparent PNG pasted into a dark
-            # slide loses its black axes. The on-screen figure is untouched.
-            plot.figure.savefig(path, format=fmt, dpi=dpi,
-                                facecolor="white", edgecolor="none")
-        except (OSError, ValueError, RuntimeError) as exc:
+            # White background, figure written at its on-screen size and
+            # limits: the same writer the main canvas uses.
+            save_figure(plot.figure, path, dpi=dpi)
+        except (OSError, ValueError, RuntimeError, ImportError) as exc:
             raise CestError(f"could not write {path}: {exc}") from exc
         return path
 
-    def _save_image(self) -> None:                        # pragma: no cover
-        if not self._plot_has_content(self._current_plot()):
-            QMessageBox.information(self, "CEST", "Nothing is plotted on this tab yet.")
+    def _save_image(self, plot=None) -> None:            # pragma: no cover
+        plot = plot if plot is not None else self._current_plot()
+        if not self._plot_has_content(plot):
+            QMessageBox.information(self, "CEST", "Nothing is plotted yet.")
             return
         start = self._last_image_dir or (
             Path(self._data_path).parent if self._data_path is not None
             else Path.home()
         )
         name, chosen = QFileDialog.getSaveFileName(
-            self, "Save plot image", str(start / self.default_image_name()),
+            self, "Save plot image",
+            str(start / self.default_image_name(plot)),
             ";;".join(label for label, _ in IMAGE_FILTERS),
         )
         if not name:
@@ -1693,14 +1843,115 @@ class CestPanel(QWidget):
         path = Path(name)
         # Some dialogs return a name without the suffix of the chosen filter.
         if path.suffix.lower() not in IMAGE_SUFFIXES:
-            suffix = dict(IMAGE_FILTERS).get(chosen, ".png")
-            path = path.with_name(path.name + suffix)
+            ext = dict(IMAGE_FILTERS).get(chosen, "png")
+            path = path.with_name(f"{path.name}.{ext}")
         try:
-            written = self.save_image(path)
+            written = self.save_image(path, plot=plot)
         except CestError as exc:
             QMessageBox.warning(self, "CEST", str(exc))
             return
         self._last_image_dir = written.parent
+
+    # ---------------------------------------------------------- right-click
+
+    def build_plot_menu(self, plot) -> QMenu:
+        """Menu construction only -- never calls exec(), so tests can drive it.
+
+        Same split as the main canvas: QMenu.exec on a Shiboken-wrapped class
+        cannot be monkeypatched reliably.
+        """
+        menu = QMenu(self)
+        has_content = self._plot_has_content(plot)
+        save = menu.addAction("Save image\u2026", lambda: self._save_image(plot))
+        save.setEnabled(has_content)
+        if plot is self._z_plot:
+            menu.addSeparator()
+            full = menu.addAction("Full range", self._reset_z_limits)
+            full.setEnabled(has_content)
+        # Marker entries worded and ordered exactly as on the main canvas.
+        menu.addSeparator()
+        point = plot.context_point
+        vertical = menu.addAction("Add vertical marker here",
+                                  lambda: plot.add_marker("vertical"))
+        horizontal = menu.addAction("Add horizontal marker here",
+                                    lambda: plot.add_marker("horizontal"))
+        # Greyed, not hidden, when the click was outside the axes, so the
+        # menu keeps its shape.
+        vertical.setEnabled(point is not None)
+        horizontal.setEnabled(point is not None)
+        remove = menu.addAction("Remove nearest marker", plot.remove_nearest_marker)
+        remove.setEnabled(bool(plot.markers) and point is not None)
+        clear_markers = menu.addAction("Clear all markers", plot.clear_markers)
+        clear_markers.setEnabled(bool(plot.markers))
+        if plot is self._z_plot:
+            menu.addSeparator()
+            menu.addAction("Add CEST experiment to plot\u2026",
+                           self._choose_overlay)
+            keep = menu.addAction("Keep current Z-spectrum on plot",
+                                  self._keep_overlay)
+            keep.setEnabled(self._z is not None)
+            clear = menu.addAction("Remove all overlays", self._clear_overlays)
+            clear.setEnabled(bool(self._overlays))
+        return menu
+
+    def set_marker_style(self, style: dict) -> None:
+        """Apply the main canvas's marker style (Preferences) to both plots."""
+        for plot in (self._n_plot, self._z_plot):
+            plot.set_marker_style(style)
+
+    def _on_plot_menu(self, plot, pos) -> None:
+        # Captured on the click that opens the menu: the menu itself has no
+        # idea where the pointer was.
+        plot.context_point = plot.data_point_at(pos)
+        self._exec_menu(self.build_plot_menu(plot), plot.mapToGlobal(pos))
+
+    @staticmethod
+    def _exec_menu(menu, where) -> None:                  # pragma: no cover
+        menu.exec(where)
+
+    # --------------------------------------------------------- drag & drop
+    #
+    # dragEnterEvent MUST accept or dropEvent never fires.
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasFormat(MIME_DATASET):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:
+        if event.mimeData().hasFormat(MIME_DATASET):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:
+        if self.handle_mime_data(event.mimeData()):
+            event.acceptProposedAction()
+
+    def handle_mime_data(self, mime) -> bool:
+        """Overlay every dropped expno on the Z-spectrum.
+
+        With nothing loaded, the first dropped experiment is loaded and
+        built as the main curve and the rest are overlaid. With a CEST
+        experiment loaded, every dropped one is overlaid on it.
+        """
+        if not mime.hasFormat(MIME_DATASET):
+            return False
+        try:
+            payload = json.loads(bytes(mime.data(MIME_DATASET)).decode("utf-8"))
+            paths = [Path(item["path"]) for item in payload]
+        except (ValueError, UnicodeDecodeError, TypeError, KeyError):
+            return False
+        paths = list(dict.fromkeys(paths))
+        if not paths:
+            return False
+        if self._data is None:
+            self.load(paths[0])
+            paths = paths[1:]
+        if self._data is not None and self._z is None and self._offsets is not None:
+            self._build_z()
+        messages = [self.add_overlay_from(p) for p in paths]
+        if messages:
+            self._append_note("\n".join(messages))
+        self._tabs.setCurrentIndex(1)
+        return True
 
     # --------------------------------------------------------------- export
 

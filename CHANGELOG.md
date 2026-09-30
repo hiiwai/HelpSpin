@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.4 - 2026-09-30
+
+### CEST plots now work like the main canvas
+
+- **Right-click menu** on both CEST plots (nutation and Z-spectrum), worded
+  and ordered as on the main canvas: Save image…, Full range, Add vertical /
+  horizontal marker here, Remove nearest marker, Clear all markers. The
+  Z-spectrum menu also has Add CEST experiment to plot…, Keep current
+  Z-spectrum on plot, and Remove all overlays. On macOS right-click is a
+  two-finger click or Control-click.
+- **Save image** uses the main canvas's writer and formats: PNG, JPEG, TIFF,
+  SVG, PDF, EPS, PS and PowerPoint, 300 dpi, text editable in vector
+  output. The code now lives in one place, `ui/figure_export.py`, shared by
+  both canvases.
+- **Markers** as on the main canvas: pinned in data units, labelled with
+  their value (ppm or Hz, I/I0, ms), kept through zoom, rebuilds, overlays
+  and saving, and styled from Preferences. Switching the Z-spectrum between
+  ppm and Hz converts vertical markers.
+- **Drag and drop**: drag one or more expnos from the browser onto the CEST
+  window to overlay them on the Z-spectrum. On an empty panel the first is
+  loaded as the main curve.
+
+1201 tests (up from 1131).
+
 ## 0.9.3 - 2026-09-30
 
 ### Added: Save image in the CEST panel

@@ -389,6 +389,8 @@ class MainWindow(QMainWindow):
             panel = CestPanel(self)
             panel.setWindowFlag(Qt.Window, True)
             self._cest_panel = panel
+        # Markers look the same on every canvas (Preferences -> markers).
+        panel.set_marker_style(self._canvas.marker_style())
         selected = self._selected_expnos()
         if len(selected) == 1:
             panel.load(selected[0])
@@ -843,6 +845,9 @@ class MainWindow(QMainWindow):
         self._canvas.set_trace_opacity(dialog.opacity())
         self._canvas.set_cursor_decimals(dialog.cursor_decimals())
         self._canvas.set_marker_style(**dialog.marker_style())
+        cest = getattr(self, "_cest_panel", None)
+        if cest is not None:
+            cest.set_marker_style(self._canvas.marker_style())
         self._canvas.set_grid_spacing_y(dialog.grid_spacing_y())
         self._palette_name = dialog.palette()
         save_slot_styles(styles)   # default for next run

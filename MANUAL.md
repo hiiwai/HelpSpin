@@ -455,8 +455,14 @@ matched to anything.
   reference and error-bar settings, on the peak nearest the current main
   peak. Selecting several expnos in the browser before opening CEST loads the
   first and overlays the rest in one step.
-- **Save image…** (Ctrl+S / Cmd+S) — saves the plot on the current tab as
-  PNG, PDF, SVG or TIFF (300 dpi for raster formats), exactly as zoomed.
+- **Save image…** (Ctrl+S / Cmd+S, or right-click the plot) — saves the plot
+  exactly as zoomed, in the same formats as the main canvas: PNG, JPEG, TIFF,
+  SVG, PDF, EPS, PS or PowerPoint (300 dpi for raster).
+- **Right-click menu** — as on the main canvas: Save image, Full range, and
+  vertical/horizontal markers (add at the click, remove nearest, clear all),
+  styled from Preferences. The Z-spectrum menu also adds or keeps overlays.
+- **Drag and drop** — drag expnos from the browser onto the CEST window to
+  overlay their Z-spectra.
 
 Scroll the wheel over the plot to zoom x about the cursor; hold Shift to
 zoom y. The range boxes follow.

@@ -28,6 +28,7 @@ from PySide6.QtWidgets import QFileDialog, QMenu, QVBoxLayout, QWidget
 
 from ..domain.project import DEFAULT_PALETTE as PALETTE
 from .dataset_model import MIME_DATASET
+from .figure_export import EXPORT_FILTERS, save_figure
 
 # Okabe-Ito is already the domain palette; reuse it so on-screen colours match
 # whatever an eventual export produces.
@@ -2125,22 +2126,8 @@ class SpectrumCanvas(QWidget):
 
     # -- right-click export ---------------------------------------------
 
-    # Format -> (file filter, is_vector). Vector formats keep text editable.
-    EXPORT_FILTERS = [
-        ("PNG image (*.png)", "png"),
-        ("JPEG image (*.jpg)", "jpg"),
-        ("TIFF image (*.tif)", "tif"),
-        ("SVG vector (*.svg)", "svg"),
-        ("PDF vector (*.pdf)", "pdf"),
-        ("EPS vector (*.eps)", "eps"),
-        ("PostScript (*.ps)", "ps"),
-        ("PowerPoint slide (*.pptx)", "pptx"),
-    ]
-    # EMF is deliberately NOT offered. matplotlib cannot write it, and the
-    # only route (converting via an external Inkscape install) silently
-    # produced nothing when Inkscape was absent, which is worse than not
-    # offering the format. SVG, PDF and EPS are vector and universally
-    # readable; use one of those and convert downstream if EMF is required.
+    # One list for every canvas; see figure_export.py.
+    EXPORT_FILTERS = EXPORT_FILTERS
 
     def build_context_menu(self):
         """Menu construction only -- never calls exec().
@@ -2336,79 +2323,15 @@ class SpectrumCanvas(QWidget):
         Vector formats (svg, pdf, eps, ps) keep text as editable text rather
         than outlines, so labels can be adjusted downstream.
         """
-        import matplotlib as mpl
-
         # The crosshair is a UI overlay, not part of the figure. Leaving it in
         # bakes a stray cursor line into every exported image.
         self._clear_crosshair()
-
-        path = str(path)
-        # Path().suffix, NOT a manual rsplit on ".": a dot anywhere in the
-        # path -- a versioned folder, "OneDrive - Company Corp", a dotted user
-        # name -- makes rsplit return a fragment of a DIRECTORY name as the
-        # format ("2/figure" for /data/v1.2/figure), which matplotlib then
-        # rejects. request_save_image already learned this; this is the same
-        # bug in its sibling, reachable by any direct caller.
-        suffix = Path(path).suffix.lstrip(".").lower() or "png"
-        facecolor = "none" if transparent else "white"
-
-        # matplotlib converts text to outlines by default in vector output,
-        # which makes labels uneditable in Illustrator/Inkscape -- the whole
-        # point of exporting vector. 'none' for SVG keeps real <text>; type 42
-        # (TrueType) for PDF/PS/EPS embeds editable text rather than Type 3.
-        overrides = {
-            "svg.fonttype": "none",
-            "pdf.fonttype": 42,
-            "ps.fonttype": 42,
-        }
-        if suffix == "pptx":
-            self._save_pptx(path, dpi=dpi)
-            return
-        with mpl.rc_context(overrides):
-            self._figure.savefig(
-                path,
-                format=suffix,
-                dpi=dpi,
-                facecolor=facecolor,
-                edgecolor="none",
-                transparent=transparent,
-            )
+        save_figure(self._figure, path, transparent=transparent, dpi=dpi)
 
     def _save_pptx(self, path: str, dpi: int = 300) -> None:
-        """One slide sized to the figure, with the plot placed on it.
+        from .figure_export import _save_pptx
 
-        The image is embedded as EMF-free PNG at full resolution: PowerPoint
-        cannot render SVG reliably across versions, so a high-DPI raster is
-        the format that actually survives being opened on someone else's
-        machine.
-        """
-        try:
-            from pptx import Presentation
-            from pptx.util import Inches
-        except ImportError as exc:   # pragma: no cover - dependency present
-            raise RuntimeError(
-                "PowerPoint export needs the python-pptx package"
-            ) from exc
-
-        import tempfile as _tempfile
-
-        width_in, height_in = self._figure.get_size_inches()
-        with _tempfile.TemporaryDirectory() as tmp:
-            png = f"{tmp}/slide.png"
-            self._figure.savefig(
-                png, format="png", dpi=dpi, facecolor="white", edgecolor="none"
-            )
-            prs = Presentation()
-            prs.slide_width = Inches(float(width_in))
-            prs.slide_height = Inches(float(height_in))
-            # 6 = the blank layout in the default template.
-            slide = prs.slides.add_slide(prs.slide_layouts[6])
-            slide.shapes.add_picture(
-                png, 0, 0,
-                width=Inches(float(width_in)),
-                height=Inches(float(height_in)),
-            )
-            prs.save(path)
+        _save_pptx(self._figure, str(path), dpi=dpi)
 
     def add_spectra(self, index_a: int, index_b: int, label: str | None = None) -> bool:
         """Add a sum spectrum (A + B) as a new trace. Same rules as subtract."""

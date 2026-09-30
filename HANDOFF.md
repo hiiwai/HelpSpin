@@ -701,3 +701,12 @@ now walks the parent chain. Any new control needs the same check.
 Overlays are redrawn with `_redraw_z`, never by calling `_build_z`: keeping
 or removing a curve must not refit the loaded experiment or rewrite its
 result text, and must still work when no Z-spectrum is built.
+
+## CEST plots share the main canvas's save and marker behaviour (0.9.4)
+
+Both canvases write images through `ui/figure_export.py`; do not grow a
+second copy of the format list or the savefig options in either canvas.
+CEST markers live on `_Plot` (not the axes) and are redrawn by
+`draw_markers()` at the end of every draw, because every CEST redraw clears
+the axes. Vertical Z markers are in the CURRENT x unit and are converted in
+`_on_z_units_changed`.
