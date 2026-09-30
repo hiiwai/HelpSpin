@@ -1,6 +1,6 @@
 # HelSpin — User Manual
 
-Version 0.5.17
+Version 0.9.5
 
 Compare Bruker NMR spectra and build publication figures.
 
@@ -253,13 +253,17 @@ the state that preceded it.
 
 ## 10. Exporting a figure
 
-**Save Image…**. Choose PNG, PDF, or SVG by the extension you type; PDF and
-SVG stay vector and are what you want for a manuscript.
+Right-click the canvas → **Save image…**. Formats: PNG, JPEG, TIFF, SVG,
+PDF, EPS, PostScript and PowerPoint (one slide). The format follows the
+extension, or the chosen filter if you type none. SVG, PDF and EPS stay
+vector with editable text and are what you want for a manuscript.
 
-- **300 dpi** by default.
-- **Transparent background** is available for slides.
-- The exported figure matches what is on screen, including any X offset
-  markers.
+- **300 dpi** for raster formats, on a white background.
+- The exported figure matches what is on screen — same size, same limits,
+  including X offset markers and pinned markers. The cursor crosshair is
+  left out.
+- The CEST plots save through exactly the same code and formats (see CEST
+  mode).
 
 ---
 
@@ -313,6 +317,11 @@ Stated plainly, because finding these out mid-figure is worse.
 - **No automatic file-watching.** Refresh is explicit, by design — see §2.
 - **The TopSpin bridge is not wired up.** TopSpin identifiers parse, but there
   is no live connection to a running TopSpin.
+- **CEST: no mouse picking of the measured peak.** Type the shift or pick
+  from the Resonances list.
+- **CEST: overlays share one "offset from carrier" axis.** Experiments
+  recorded with different O1P do not line up on it.
+- **CEST: two-word frequency-list headers** (`sfo hz`, `bf ppm`) are refused.
 - **Windows and macOS are not yet verified end to end.** Development and the
   test suite currently run on Linux. The Windows installer path in particular
   has not been exercised from start to finish.
@@ -406,8 +415,11 @@ matching Part 8 of the 19F CEST manual.
 ### Z-spectrum tab
 
 Saturation offsets are read from the experiment's own `lists/f1/` copy of
-the FQ1LIST. Bare Hz, ppm (`P`), absolute MHz (`SFO`) and `BF` lists are all
-understood, as are comments and Windows line endings. Without a list the
+the FQ1LIST. A bare column of Hz offsets (the usual form) and lists headed by
+a single keyword — `O1`/`Hz`, `P`/`ppm`, `SFO` (absolute MHz) or `BF` — are
+understood, as are comments and Windows line endings. Lists with a two-word
+TopSpin header such as `sfo hz` or `bf ppm` are currently refused with
+"frequency list unreadable" rather than misread. Without a list the
 panel says so rather than plotting against row number. A series with fewer
 rows than offsets is plotted against the offsets it has, with the missing
 range named; more rows than offsets is refused, since the extras cannot be
@@ -443,29 +455,83 @@ matched to anything.
   **Full range** also resets. The direct-saturation dip runs to near zero, so
   the baseline where a bound-state dip would sit is compressed — zooming Y to
   roughly 0.95–1.02 is usually what makes one visible.
-- **Keep on plot / Remove / Clear all** — overlay several Z-spectra for
-  comparison. Each keeps its own I₀ normalisation, so experiments with
-  different gain, scans or concentration remain comparable. Entries are
-  labelled with the experiment, saturation field and D18. Use this for the
-  power series (30/60/100 Hz) and the partner-free control from Part 7 of the
-  19F CEST manual — a real exchange feature moves predictably with field and
-  is absent from the control, and both are far easier to judge on one axis.
-- **Add experiment…** — overlay another CEST expno without replacing the
-  loaded one. It is measured with the current half-width, measurement,
-  reference and error-bar settings, on the peak nearest the current main
-  peak. Selecting several expnos in the browser before opening CEST loads the
-  first and overlays the rest in one step.
-- **Save image…** (Ctrl+S / Cmd+S, or right-click the plot) — saves the plot
-  exactly as zoomed, in the same formats as the main canvas: PNG, JPEG, TIFF,
-  SVG, PDF, EPS, PS or PowerPoint (300 dpi for raster).
-- **Right-click menu** — as on the main canvas: Save image, Full range, and
-  vertical/horizontal markers (add at the click, remove nearest, clear all),
-  styled from Preferences. The Z-spectrum menu also adds or keeps overlays.
-- **Drag and drop** — drag expnos from the browser onto the CEST window to
-  overlay their Z-spectra.
+- **Plot offset in ppm** — switches the x axis between ppm and Hz. The
+  range boxes and any vertical markers are converted with it.
+
+### Choosing the peak that is measured
+
+The Z-spectrum is built from ONE window of the pseudo-2D rows: every row is
+measured over **Peak centre ± Half-width**, and that value divided by I₀ is
+one point.
+
+- **Type it** — enter the shift in **Peak centre** (e.g. `-132.975`), set
+  **Half-width (±)**, check the **Window** readout (range and point count),
+  then click **Build Z-spectrum**. Typing does not rebuild by itself, and
+  **Find peak** would overwrite your value with the peak nearest the carrier.
+- **Pick from the list** — the **Resonances** list shows the peaks found in
+  the least-saturated row. Double-click one to make it the main peak.
+- **Picking with the mouse** on the 1D rows is not available yet; the panel
+  does not display the rows themselves.
+
+### Comparing several CEST experiments on one plot
+
+Each overlaid curve is normalised to its OWN I₀, so experiments with
+different gain, scans or concentration remain comparable. Entries are
+labelled with the experiment, saturation field (CNST25) and D18.
+
+1. **Open experiment…** and choose the first CEST expno folder (the numbered
+   folder, not its parent), then **Build Z-spectrum**.
+2. Right-click the plot → **Add CEST experiment to plot…**, or use the
+   **Add experiment…** button under *Compare (overlaid Z-spectra)*. Choose
+   the second expno folder.
+3. Repeat for more. **Remove** drops the selected entries, **Clear all**
+   removes them all; **Keep on plot** keeps the current curve before you load
+   another experiment in its place.
+
+Shortcuts: select several expnos in the browser and open CEST (the first is
+loaded, the rest overlaid), or drag expnos from the browser onto the CEST
+window.
+
+Added experiments are measured with the CURRENT half-width, measurement,
+reference and error-bar settings, on the peak nearest the current main peak.
+If one cannot be added, the reason ("not a CEST experiment", "no FQ1LIST",
+"could not load" — usually the wrong folder) appears in the notes box at the
+top of the window.
+
+Use this for the power series (30/60/100 Hz) and the partner-free control
+from Part 7 of the 19F CEST manual — a real exchange feature moves
+predictably with field and is absent from the control, and both are far
+easier to judge on one axis. The x axis is the offset from EACH
+experiment's own carrier, so compare experiments recorded with the same
+O1P.
+
+### Right-click menu, markers and saving
+
+Right-click either CEST plot (on a Mac: two-finger click or Control-click).
+The menu matches the main canvas:
+
+- **Save image…** — same formats and writer as the main canvas (PNG, JPEG,
+  TIFF, SVG, PDF, EPS, PS, PowerPoint; 300 dpi raster), exactly as zoomed.
+  Also the **Save image…** button in the header, Ctrl+S / Cmd+S.
+- **Full range** (Z-spectrum) — back to the whole data range.
+- **Add vertical / horizontal marker here**, **Remove nearest marker**,
+  **Clear all markers** — pinned in data units and labelled with their value
+  (ppm or Hz, I/I₀, ms), kept through zoom, rebuilds, overlays and saving,
+  styled from Preferences like the main canvas.
+- **Add CEST experiment to plot…**, **Keep current Z-spectrum on plot**,
+  **Remove all overlays** (Z-spectrum).
 
 Scroll the wheel over the plot to zoom x about the cursor; hold Shift to
-zoom y. The range boxes follow.
+zoom y; double-click to reset. The range boxes follow.
+
+### Carrier (O1P) and the offset axis
+
+The x axis is the saturation offset from the **carrier**, i.e. the
+transmitter position O1P, not from the observed peak. The carrier in ppm is
+computed as (SFO1 − SF)/SF, so it stays correct after re-referencing with SR.
+Offsets are converted between Hz and ppm with SFO1. A check that both are
+right: the direct-saturation dip must be fitted at the peak's own offset from
+the carrier (shown in the notes box and the resonance list).
 
 ### Working with several resonances
 
@@ -475,7 +541,7 @@ saturation offsets are measured from, and normally the one you want. The
 carrier. The main peak is marked and always measured; tick another to add
 its Z-spectrum to the plot as a dashed curve, or double-click to make it the
 main peak instead. **Peak centre** stays freely editable if the detector
-misses one.
+misses one (see *Choosing the peak that is measured*).
 
 Note that the carrier and the observed peak are different things. The peak
 is where you measure intensity; the carrier is the zero of the saturation

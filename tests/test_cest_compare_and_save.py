@@ -582,3 +582,22 @@ def test_main_window_passes_its_marker_style(qtbot, monkeypatch):
         assert panel._z_plot.marker_style["color"] == "#123456"
     finally:
         panel.hide()
+
+
+def test_double_click_on_the_z_plot_resets_the_view(panel, tmp_path):
+    """Documented in the manual; wired to the canvas only in 0.9.5."""
+    from matplotlib.backend_bases import MouseEvent
+
+    _built(panel, tmp_path, "dbl")
+    plot = panel._z_plot
+    full = plot.axes.get_xlim()
+    panel._z_xmin.setValue(-1.0)
+    panel._z_xmax.setValue(1.0)
+    assert plot.axes.get_xlim() != full
+    x, y = plot.axes.transAxes.transform((0.5, 0.5))
+    right = MouseEvent("button_press_event", plot, x, y, button=3, dblclick=True)
+    plot.callbacks.process("button_press_event", right)
+    assert plot.axes.get_xlim() != full          # right double-click ignored
+    event = MouseEvent("button_press_event", plot, x, y, button=1, dblclick=True)
+    plot.callbacks.process("button_press_event", event)
+    assert plot.axes.get_xlim() == pytest.approx(full)

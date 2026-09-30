@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.5 - 2026-09-30
+
+### Manual brought up to date
+
+MANUAL.md / MANUAL.pdf now carry the current version (the header still said
+0.5.17) and document the CEST panel as it is: choosing the measured peak by
+typing or from the Resonances list, comparing several CEST experiments step
+by step, the right-click menu, markers and Save image, the carrier (O1P) and
+offset axis, and which frequency-list formats are read. Figure export (§10)
+lists the actual formats. CEST limitations are added to §13.
+
+### Fixed: double-click did not reset the Z-spectrum view
+
+Documented, and the handler existed, but it was never connected to the
+canvas. Left double-click now returns to the full range; right double-click
+is ignored so it cannot fight the context menu.
+
+### Fixed: black boxes in MANUAL.pdf
+
+The PDF's built-in fonts have no subscript-zero or Unicode minus glyph, so
+"I₀" printed as a solid box. build_manual.py now emits them as markup.
+
+1159 tests (up from 1158).
+
 ## 0.9.4 - 2026-09-30
 
 ### CEST plots now work like the main canvas
@@ -22,7 +46,8 @@
   window to overlay them on the Z-spectrum. On an empty panel the first is
   loaded as the main curve.
 
-1201 tests (up from 1131).
+1158 tests (up from 1131). (First published as 1201: three files were
+counted twice when summing the chunked run.)
 
 ## 0.9.3 - 2026-09-30
 

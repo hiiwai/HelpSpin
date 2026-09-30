@@ -693,6 +693,8 @@ class CestPanel(QWidget):
 
         self._z_plot = _Plot(wheel_zoom=True)
         self._z_plot.zoomed.connect(self._sync_z_limit_boxes)
+        # Documented since 0.7 but never connected until 0.9.5.
+        self._z_plot.mpl_connect("button_press_event", self._on_z_click)
         split = QSplitter(Qt.Horizontal)
         split.addWidget(scroll)
         split.addWidget(self._z_plot)
@@ -1755,7 +1757,7 @@ class CestPanel(QWidget):
 
     def _on_z_click(self, event) -> None:
         """Double-click anywhere on the plot returns to the full range."""
-        if getattr(event, "dblclick", False):
+        if getattr(event, "dblclick", False) and getattr(event, "button", 1) == 1:
             self._reset_z_limits()
 
     def _sync_z_boxes(self) -> None:

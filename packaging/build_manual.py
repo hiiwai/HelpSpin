@@ -121,6 +121,8 @@ def inline(text: str) -> str:
     # boxes, so they are converted to real superscript markup instead.
     for uni, plain in (("\u00b9", "1"), ("\u00b2", "2"), ("\u00b3", "3")):
         text = text.replace(uni, f"<super>{plain}</super>")
+    # Same problem for the subscript in I0 and for the Unicode minus sign.
+    text = text.replace("\u2080", "<sub>0</sub>").replace("\u2212", "-")
     return text
 
 
