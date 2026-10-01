@@ -141,6 +141,67 @@ class _Plot(FigureCanvasQTAgg):
             self.mpl_connect("button_press_event", self._pan_start)
             self.mpl_connect("motion_notify_event", self._pan_move)
             self.mpl_connect("button_release_event", self._pan_end)
+        # Crosshair with value readouts, as on the main spectrum canvas.
+        self.crosshair_enabled = True
+        self._crosshair: list = []
+        self.mpl_connect("motion_notify_event", self._crosshair_move)
+        self.mpl_connect("axes_leave_event", self._crosshair_leave)
+        self.mpl_connect("figure_leave_event", self._crosshair_leave)
+
+    # ---------------------------------------------------------- crosshair
+
+    def clear_crosshair(self, redraw: bool = True) -> None:
+        if not self._crosshair:
+            return
+        for artist in self._crosshair:
+            with contextlib.suppress(ValueError, NotImplementedError, AttributeError):
+                artist.remove()
+        self._crosshair = []
+        if redraw:
+            self.draw_idle()
+
+    def _crosshair_leave(self, _event=None) -> None:
+        self.clear_crosshair()
+
+    def _crosshair_move(self, event) -> None:
+        if (self._pan is not None or not self.crosshair_enabled
+                or event.inaxes is not self.axes or event.xdata is None
+                or event.ydata is None or not self._has_data()):
+            self.clear_crosshair()
+            return
+        self.clear_crosshair(redraw=False)
+        x, y = float(event.xdata), float(event.ydata)
+        # Same look as the main canvas crosshair.
+        line = dict(color="#888888", linewidth=0.6, linestyle="--", alpha=0.8)
+        # Readouts sit just INSIDE the frame on a pale box: these figures
+        # use constrained layout with no spare margin, so text outside the
+        # frame is cut off by the canvas edge.
+        text = dict(fontsize=8, color="#333333", clip_on=True,
+                    bbox=dict(boxstyle="round,pad=0.15", fc="white",
+                              ec="none", alpha=0.8))
+        artists = [
+            self.axes.axvline(x, **line),
+            self.axes.axhline(y, **line),
+            self.axes.text(x, 0.995, self.x_format.format(x),
+                           transform=self.axes.get_xaxis_transform(),
+                           ha="center", va="top", **text),
+            self.axes.text(0.997, y, self.y_format.format(y),
+                           transform=self.axes.get_yaxis_transform(),
+                           ha="right", va="bottom", **text),
+        ]
+        for artist in artists:
+            # Out of the layout: with constrained layout a readout outside
+            # the frame would otherwise resize the axes on every mouse move.
+            artist.set_in_layout(False)
+        self._crosshair = artists
+        self.draw_idle()
+
+    def _has_data(self) -> bool:
+        """Content other than the crosshair itself."""
+        own = {id(a) for a in self._crosshair}
+        axes = self.axes
+        return any(id(a) not in own for a in axes.lines) or bool(
+            axes.collections or axes.patches)
 
     # ---------------------------------------------------------------- pan
 
@@ -170,6 +231,7 @@ class _Plot(FigureCanvasQTAgg):
         # the transform already knows the x axis is inverted.
         self.axes.set_xlim(xlim[0] - dx, xlim[1] - dx)
         self.axes.set_ylim(ylim[0] - dy, ylim[1] - dy)
+        self.clear_crosshair(redraw=False)
         self.draw_idle()
         self.zoomed.emit()
 
@@ -233,10 +295,10 @@ class _Plot(FigureCanvasQTAgg):
         if self.residual_axes is not None:
             self.residual_axes.clear()
         self._marker_artists = []
+        self._crosshair = []
 
     def has_content(self) -> bool:
-        axes = self.axes
-        return bool(axes.lines or axes.collections or axes.patches)
+        return self._has_data()
 
     # ------------------------------------------------------------ markers
 
@@ -400,18 +462,29 @@ class CestPanel(QWidget):
         # Use only the first N rows of the pseudo-2D -- to drop trailing
         # increments that carry no signal (a nutation run past the useful
         # range, a CEST list with blank tail rows). 0 means all rows.
+        # A row range (1-based, inclusive): "from row N to row M" or
+        # "from row N to the end". Default from 1 to end = every row.
+        tip = (
+            "Use only rows FROM..TO (t1 increments, counted from 1) of the\n"
+            "pseudo-2D, for both tabs and for added experiments -- e.g. to\n"
+            "drop blank rows at the start or the end. In CEST the matching\n"
+            "saturation offsets are dropped with them, and the nutation\n"
+            "pulse lengths keep their true values."
+        )
+        self._row_first = QSpinBox()
+        self._row_first.setRange(1, 100000)
+        self._row_first.setPrefix("from row ")
+        self._row_first.setValue(1)
+        self._row_first.setKeyboardTracking(False)
+        self._row_first.setToolTip(tip)
+        self._row_first.valueChanged.connect(self._on_row_limit_changed)
         self._row_limit = QSpinBox()
         self._row_limit.setRange(0, 100000)
-        self._row_limit.setSpecialValueText("all")
-        self._row_limit.setPrefix("first ")
-        self._row_limit.setSuffix(" rows")
+        self._row_limit.setSpecialValueText("to end")
+        self._row_limit.setPrefix("to row ")
         self._row_limit.setValue(0)
         self._row_limit.setKeyboardTracking(False)
-        self._row_limit.setToolTip(
-            "Use only the first N rows (t1 increments) of the pseudo-2D for\n"
-            "both tabs and for added experiments. 'all' uses every row.\n"
-            "In CEST the matching saturation offsets are dropped with them."
-        )
+        self._row_limit.setToolTip(tip)
         self._row_limit.valueChanged.connect(self._on_row_limit_changed)
 
         header = QHBoxLayout()
@@ -421,6 +494,7 @@ class CestPanel(QWidget):
         header.addWidget(QLabel("Source:"))
         header.addWidget(self._source, 1)
         header.addWidget(QLabel("Rows:"))
+        header.addWidget(self._row_first)
         header.addWidget(self._row_limit)
         header.addWidget(self._show_fits)
 
@@ -859,7 +933,8 @@ class CestPanel(QWidget):
             try:
                 offsets, list_path = read_offsets(expno, data.sfo1_mhz)
                 self._offsets_full = offsets
-                self._offsets = self._limited_offsets(offsets)
+                self._offsets = self._limited_offsets(
+                    offsets, self._data_full.n_rows)
                 if offsets is not None:
                     notes.append(
                         f"{offsets.size} saturation offsets from "
@@ -874,8 +949,11 @@ class CestPanel(QWidget):
                     "cannot be built without saturation offsets."
                 )
 
-        used = (f"{data.n_rows} of {self._data_full.n_rows} rows"
-                if data.n_rows < self._data_full.n_rows else f"{data.n_rows} rows")
+        used = self._row_label(data.n_rows, self._data_full.n_rows,
+                               self._row_start())
+        problem = self._row_range_problem(self._data_full.n_rows)
+        if problem:
+            notes.append(problem)
         self._path_label.setText(
             f"{expno}  \u2014  {used} from {data.source}, "
             f"PULPROG {str(data.acqus.get('PULPROG', '?')).strip('<>')} "
@@ -918,21 +996,66 @@ class CestPanel(QWidget):
 
     # ------------------------------------------------------------ row limit
 
-    def _row_count_limit(self) -> int:
-        return int(self._row_limit.value())
+    def _row_range(self, n_rows: int):
+        """(start, stop) as 0-based slice bounds, or None for "every row".
+
+        stop is None for "to the end". None is also returned for a range
+        that selects nothing for this experiment (FROM beyond its rows, or
+        FROM after TO); `_row_range_problem` says so in the notes.
+        """
+        first = int(self._row_first.value())
+        last = int(self._row_limit.value())          # 0 = to the end
+        if first <= 1 and (last == 0 or last >= n_rows):
+            return None
+        start = first - 1
+        stop = None if last == 0 else last
+        if start >= (n_rows if stop is None else min(stop, n_rows)):
+            return None
+        return start, stop
+
+    def _row_range_problem(self, n_rows: int) -> str:
+        first = int(self._row_first.value())
+        last = int(self._row_limit.value())
+        if first <= 1 and last == 0:
+            return ""
+        if self._row_range(n_rows) is None and not (
+                first <= 1 and (last == 0 or last >= n_rows)):
+            to = "end" if last == 0 else str(last)
+            return (f"Row range {first}..{to} selects nothing from "
+                    f"{n_rows} rows; every row is used instead.")
+        return ""
+
+    def _row_label(self, used: int, total: int, start: int) -> str:
+        if used >= total:
+            return f"{total} rows"
+        return f"rows {start + 1}\u2013{start + used} of {total}"
 
     def _limited(self, data):
-        """`data` cut to the first N rows; the same object when no cut applies."""
-        n = self._row_count_limit()
-        if n <= 0 or n >= data.n_rows:
+        """`data` cut to the row range; the same object when no cut applies."""
+        bounds = self._row_range(data.n_rows)
+        if bounds is None:
             return data
-        return dataclasses.replace(data, rows=data.rows[:n])
+        start, stop = bounds
+        return dataclasses.replace(data, rows=data.rows[start:stop])
 
-    def _limited_offsets(self, offsets):
-        n = self._row_count_limit()
-        if offsets is None or n <= 0 or n >= offsets.size:
+    def _limited_offsets(self, offsets, n_rows: int):
+        """Offsets cut to the SAME rows as `_limited` cuts the data.
+
+        "To the end" keeps every offset after FROM, so a run that stopped
+        early is still reported as PARTIAL rather than hidden by the cut.
+        """
+        bounds = self._row_range(n_rows)
+        if offsets is None or bounds is None:
             return offsets
-        return offsets[:n]
+        start, stop = bounds
+        return offsets[start:stop]
+
+    def _row_start(self) -> int:
+        full = getattr(self, "_data_full", None)
+        if full is None:
+            return 0
+        bounds = self._row_range(full.n_rows)
+        return 0 if bounds is None else bounds[0]
 
     def _on_row_limit_changed(self, _value=None) -> None:
         """Re-cut the loaded experiment and redo whatever was already built.
@@ -946,15 +1069,18 @@ class CestPanel(QWidget):
         had_fit = self._fit is not None
         had_z = self._z_display is not None
         self._data = self._limited(full)
-        self._offsets = self._limited_offsets(getattr(self, "_offsets_full", None))
+        self._offsets = self._limited_offsets(
+            getattr(self, "_offsets_full", None), full.n_rows)
         data = self._data
         label = self._path_label.text()
         head, sep, tail = label.partition("  \u2014  ")
         if sep:
             rest = tail.split(" from ", 1)[-1]
-            used = (f"{data.n_rows} of {full.n_rows} rows"
-                    if data.n_rows < full.n_rows else f"{data.n_rows} rows")
+            used = self._row_label(data.n_rows, full.n_rows, self._row_start())
             self._path_label.setText(f"{head}{sep}{used} from {rest}")
+        problem = self._row_range_problem(full.n_rows)
+        if problem:
+            self._append_note(problem)
         self._fit = None
         self._n_series = None
         self._z = None
@@ -987,7 +1113,12 @@ class CestPanel(QWidget):
             return
         data = self._data
         try:
-            t = nutation_axis(data)
+            # Pulse lengths of the SELECTED rows: computed for every row and
+            # then cut, so skipping the first rows does not relabel row 9 as
+            # the shortest pulse.
+            start = self._row_start()
+            full = getattr(self, "_data_full", None) or data
+            t = nutation_axis(full)[start:start + data.n_rows]
             y = measure_rows(
                 data.rows, data.ppm, self._n_centre.value(), self._n_half.value(),
                 mode=self._n_mode.currentData(), baseline=self._n_baseline.isChecked(),
@@ -1772,8 +1903,9 @@ class CestPanel(QWidget):
         if offsets is None:
             return f"{expno.name}: no FQ1LIST, cannot build a Z-spectrum"
         full_rows = data.n_rows
+        bounds = self._row_range(full_rows)
         data = self._limited(data)
-        offsets = self._limited_offsets(offsets)
+        offsets = self._limited_offsets(offsets, full_rows)
         rows = data.rows
         if rows.shape[0] > offsets.size:
             return (f"{expno.name}: {rows.shape[0]} rows but only "
@@ -1802,8 +1934,9 @@ class CestPanel(QWidget):
         except CestError as exc:
             return f"{expno.name}: could not build the Z-spectrum ({exc})"
         label = self._overlay_label(expno, data.acqus)
-        if data.n_rows < full_rows:
-            label += f" [first {data.n_rows}]"
+        if bounds is not None:
+            first = bounds[0] + 1
+            label += f" [rows {first}\u2013{first + data.n_rows - 1}]"
         label = self._add_overlay(label, z)
         return f"added {label}, peak {centre:+.4f} ppm{note}"
 
@@ -1952,6 +2085,8 @@ class CestPanel(QWidget):
         try:
             # White background, figure written at its on-screen size and
             # limits: the same writer the main canvas uses.
+            # The crosshair is a pointer aid, not part of the figure.
+            plot.clear_crosshair(redraw=False)
             save_figure(plot.figure, path, dpi=dpi)
         except (OSError, ValueError, RuntimeError, ImportError) as exc:
             raise CestError(f"could not write {path}: {exc}") from exc

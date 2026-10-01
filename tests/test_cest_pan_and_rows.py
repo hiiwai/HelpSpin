@@ -140,7 +140,7 @@ def test_double_click_after_pan_restores_full_range(panel, tmp_path):
 
 def test_default_uses_all_rows(panel, tmp_path):
     panel.load(_cest(tmp_path))
-    assert panel._row_limit.text() == "all"
+    assert panel._row_limit.text() == "to end"
     assert panel._data.n_rows == N and panel._offsets.size == N
 
 
@@ -152,7 +152,7 @@ def test_limit_cuts_rows_and_offsets_and_rebuilds(panel, tmp_path):
     assert panel._offsets.size == 8
     assert panel._data_full.n_rows == N            # original kept
     assert panel._z is not None and panel._z.offsets_hz.size == 8
-    assert f"8 of {N} rows" in panel._path_label.text()
+    assert f"rows 1\u20138 of {N}" in panel._path_label.text()
     assert "PARTIAL" not in panel._z_result.toPlainText()
     panel._row_limit.setValue(0)
     assert panel._data.n_rows == N and panel._z.offsets_hz.size == N
@@ -170,7 +170,7 @@ def test_limit_set_before_loading_applies_at_load(panel, tmp_path):
     panel._row_limit.setValue(10)
     panel.load(_cest(tmp_path))
     assert panel._data.n_rows == 10 and panel._offsets.size == 10
-    assert f"10 of {N} rows" in panel._path_label.text()
+    assert f"rows 1\u201310 of {N}" in panel._path_label.text()
 
 
 def test_limit_without_built_z_does_not_build_it(panel, tmp_path):
@@ -207,7 +207,7 @@ def test_overlays_use_the_cut_and_say_so(panel, tmp_path):
     message = panel.add_overlay_from(_cest(tmp_path, "o"))
     assert message.startswith("added")
     name, curve = panel._overlays[0]
-    assert "[first 8]" in name and curve.offsets_hz.size == 8
+    assert "[rows 1\u20138]" in name and curve.offsets_hz.size == 8
 
 
 def test_changing_the_limit_leaves_existing_overlays_alone(panel, tmp_path):
@@ -218,3 +218,140 @@ def test_changing_the_limit_leaves_existing_overlays_alone(panel, tmp_path):
     panel._row_limit.setValue(8)
     assert panel._overlays[0][1] is kept
     assert kept.offsets_hz.size == N
+
+
+# ------------------------------------------------- row range FROM..TO (0.9.7)
+
+def test_from_row_to_end_skips_leading_rows(panel, tmp_path):
+    panel.load(_cest(tmp_path))
+    panel._build_z()
+    panel._row_first.setValue(5)
+    assert panel._data.n_rows == N - 4
+    np = pytest.importorskip("numpy")
+    # rows AND offsets cut identically: row 5 still pairs with offset 5
+    assert np.array_equal(panel._data.rows, panel._data_full.rows[4:])
+    assert np.array_equal(panel._offsets, panel._offsets_full[4:])
+    assert f"rows 5\u2013{N} of {N}" in panel._path_label.text()
+    assert panel._z.offsets_hz.size == N - 4
+
+
+def test_from_and_to_together(panel, tmp_path):
+    panel.load(_cest(tmp_path))
+    panel._row_first.setValue(3)
+    panel._row_limit.setValue(10)
+    assert panel._data.n_rows == 8
+    assert panel._offsets.size == 8
+    assert "rows 3\u201310 of" in panel._path_label.text()
+
+
+def test_empty_range_falls_back_to_all_rows_with_a_note(panel, tmp_path):
+    panel.load(_cest(tmp_path))
+    panel._row_first.setValue(12)
+    panel._row_limit.setValue(5)             # FROM after TO
+    assert panel._data.n_rows == N
+    assert "selects nothing" in panel._notes.toPlainText()
+    panel._row_limit.setValue(0)
+    panel._row_first.setValue(N + 3)         # FROM beyond the data
+    assert panel._data.n_rows == N
+
+
+def test_nutation_keeps_true_pulse_lengths_when_skipping_rows(panel, tmp_path):
+    from helspin.infrastructure.cest_reader import nutation_axis
+
+    panel.load(_nut(tmp_path, rows=24))
+    panel._fit_nutation()
+    full_t = nutation_axis(panel._data_full)
+    panel._row_first.setValue(5)
+    t, _ = panel._n_series
+    assert t.size == 20
+    assert t == pytest.approx(full_t[4:])
+    assert t[0] > full_t[0]
+
+
+def test_overlay_label_names_the_range(panel, tmp_path):
+    panel._row_first.setValue(3)
+    panel.add_overlay_from(_cest(tmp_path, "rng"))
+    name, curve = panel._overlays[0]
+    assert f"[rows 3\u2013{N}]" in name
+    assert curve.offsets_hz.size == N - 2
+
+
+# ---------------------------------------------------------------- crosshair
+
+def _move(plot, fx, fy):
+    plot.callbacks.process("motion_notify_event",
+                           _event(plot, "motion_notify_event", fx, fy))
+
+
+def test_crosshair_follows_the_pointer_with_values(panel, tmp_path):
+    plot = _built(panel, tmp_path)
+    _move(plot, 0.5, 0.5)
+    assert len(plot._crosshair) == 4
+    texts = [a.get_text() for a in plot._crosshair[2:]]
+    assert texts[0].endswith("ppm") or texts[0].endswith("Hz")
+    x = (plot.axes.transAxes + plot.axes.transData.inverted()).transform((0.5, 0.5))[0]
+    assert plot._crosshair[0].get_xdata()[0] == pytest.approx(x, abs=0.1)
+    _move(plot, 0.3, 0.3)
+    assert len(plot._crosshair) == 4         # replaced, not accumulated
+
+
+def test_crosshair_hidden_outside_axes_and_on_leave(panel, tmp_path):
+    plot = _built(panel, tmp_path)
+    _move(plot, 0.5, 0.5)
+    _move(plot, -0.3, 0.5)
+    assert plot._crosshair == []
+    _move(plot, 0.5, 0.5)
+    plot._crosshair_leave(None)
+    assert plot._crosshair == []
+
+
+def test_crosshair_does_not_change_limits_layout_or_content(panel, tmp_path):
+    plot = _built(panel, tmp_path)
+    before = (plot.axes.get_xlim(), plot.axes.get_ylim(),
+              tuple(plot.axes.get_position().bounds))
+    _move(plot, 0.5, 0.5)
+    plot.draw()
+    after = (plot.axes.get_xlim(), plot.axes.get_ylim(),
+             tuple(plot.axes.get_position().bounds))
+    assert after == before
+
+
+def test_no_crosshair_on_an_empty_plot(panel):
+    plot = panel._z_plot
+    plot.draw()
+    _move(plot, 0.5, 0.5)
+    assert plot._crosshair == []
+    assert not plot.has_content()
+
+
+def test_crosshair_hidden_while_panning_and_not_saved(panel, tmp_path):
+    plot = _built(panel, tmp_path)
+    plot.callbacks.process("button_press_event",
+                           _event(plot, "button_press_event", 0.5, 0.5))
+    _move(plot, 0.6, 0.5)
+    assert plot._crosshair == []
+    plot.callbacks.process("button_release_event",
+                           _event(plot, "button_release_event", 0.6, 0.5))
+    _move(plot, 0.5, 0.5)
+    assert plot._crosshair
+    panel.save_image(tmp_path / "c.png", dpi=72)
+    assert plot._crosshair == []
+
+
+def test_crosshair_on_the_nutation_plot(panel, tmp_path):
+    panel.load(_nut(tmp_path))
+    panel._fit_nutation()
+    plot = panel._n_plot
+    plot.draw()
+    _move(plot, 0.5, 0.5)
+    assert plot._crosshair and plot._crosshair[2].get_text().endswith("ms")
+
+
+def test_markers_and_menu_ignore_the_crosshair(panel, tmp_path):
+    plot = _built(panel, tmp_path)
+    _move(plot, 0.5, 0.5)
+    plot.add_marker("vertical", 0.0)
+    plot.clear_markers()
+    assert len(plot._crosshair) == 4
+    assert all(a.axes is plot.axes for a in plot._crosshair)
+    assert plot.has_content()

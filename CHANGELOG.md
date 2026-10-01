@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.9.7 - 2026-10-01
+
+### Added: crosshair on the CEST plots
+
+Both CEST plots now show the main canvas's crosshair: grey dashed lines that
+follow the pointer, with the x value (ppm, Hz or ms) above the frame and the
+y value at the right. It hides outside the axes, while panning, and is never
+written into a saved image. Readouts are kept out of the constrained layout,
+so the plot does not shift as the pointer moves.
+
+### Changed: Rows is now a range -- from row N to row M (or to end)
+
+0.9.6 could only keep the FIRST N rows. **Rows: from row … to row …**
+selects any range, e.g. from row 9 to end to drop blank leading rows. CEST
+offsets are cut identically; nutation pulse lengths keep their true values
+for the selected rows (skipping rows no longer relabels them). A range that
+selects nothing falls back to every row with a note. Overlay labels read
+"[rows 9–64]".
+
+1190 tests (up from 1178).
+
 ## 0.9.6 - 2026-09-30
 
 ### Added: drag to move the Z-spectrum view

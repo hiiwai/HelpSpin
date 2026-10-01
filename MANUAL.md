@@ -1,6 +1,6 @@
 # HelSpin — User Manual
 
-Version 0.9.6
+Version 0.9.7
 
 Compare Bruker NMR spectra and build publication figures.
 
@@ -364,18 +364,22 @@ and leaves the measured points, residuals and reported numbers. Useful for
 judging a marginal dip against the data rather than against the model drawn
 through it.
 
-### Using only the first N rows
+### Using only some rows (from row N to row M)
 
-**Rows:** in the header limits both tabs to the first N rows (t1
-increments) of the pseudo-2D — e.g. *first 16 rows* or *first 8 rows* — to
-drop trailing increments with no signal. *all* (the default) uses every row.
+**Rows:** in the header selects which rows (t1 increments, counted from 1)
+both tabs use: **from row** N **to row** M, or *to end*. Use it to drop
+blank or bad rows at the start (*from row 9 to end*) or the end (*from row 1
+to row 56*). The default, from row 1 to end, uses every row.
 
 - In CEST the matching saturation offsets are dropped with the rows, so
-  keep your I₀ reference offsets within the first N.
-- Whatever was already fitted or built is redone at once with the new cut.
-  The file path line shows e.g. "16 of 64 rows".
-- Experiments added for comparison use the same cut, and their legend entry
-  says so ("[first 16]"). Curves already overlaid keep the cut they were
+  keep at least one I₀ reference offset inside the range.
+- In the calibration tab the pulse lengths keep their true values: row 9 is
+  still the ninth pulse length, not the first.
+- Whatever was already fitted or built is redone at once. The file path line
+  shows e.g. "rows 9–64 of 64". A range that selects nothing falls back to
+  every row, with a note.
+- Experiments added for comparison use the same range and their legend entry
+  says so ("[rows 9–64]"). Curves already overlaid keep the rows they were
   measured with.
 
 ### Which data it reads
@@ -534,6 +538,10 @@ The menu matches the main canvas:
   styled from Preferences like the main canvas.
 - **Add CEST experiment to plot…**, **Keep current Z-spectrum on plot**,
   **Remove all overlays** (Z-spectrum).
+
+A **crosshair** follows the pointer on both CEST plots, with its x and y
+values printed at the frame, as on the main canvas. It is not saved in
+images.
 
 Scroll the wheel over the plot to zoom x about the cursor; hold Shift to
 zoom y; **drag with the left button to move the view**; double-click to
