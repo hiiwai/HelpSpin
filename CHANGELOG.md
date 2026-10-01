@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.6 - 2026-09-30
+
+### Added: drag to move the Z-spectrum view
+
+Left-drag on the Z-spectrum pans x and y together; the point under the
+pointer stays under it, the range boxes follow, and double-click still
+resets. Right-click (menu) and double-click are not taken as a drag.
+
+### Added: use only the first N rows of the pseudo-2D
+
+**Rows:** in the CEST header (default *all*) limits both tabs to the first N
+rows -- e.g. 16 or 8 -- to drop trailing increments without signal. CEST
+offsets are cut with the rows, so no false "PARTIAL" warning. Changing it
+refits/rebuilds whatever was already done; the path line shows "N of M
+rows". Experiments added for comparison use the same cut and are labelled
+"[first N]"; existing overlays are left as measured.
+
+1178 tests (up from 1159).
+
 ## 0.9.5 - 2026-09-30
 
 ### Manual brought up to date

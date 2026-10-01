@@ -17,6 +17,7 @@ reliably, so construction and showing stay separate.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import math
 import re
@@ -43,6 +44,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSpinBox,
     QSplitter,
     QTabWidget,
     QVBoxLayout,
@@ -132,6 +134,49 @@ class _Plot(FigureCanvasQTAgg):
         self.y_format = "{:.3f}"
         self.context_point: tuple[float, float] | None = None
         self._marker_artists: list = []
+        # Left-drag pans the view (plots that zoom only). Nothing else on
+        # these plots uses a left drag, so the gesture is unambiguous.
+        self._pan = None
+        if wheel_zoom:
+            self.mpl_connect("button_press_event", self._pan_start)
+            self.mpl_connect("motion_notify_event", self._pan_move)
+            self.mpl_connect("button_release_event", self._pan_end)
+
+    # ---------------------------------------------------------------- pan
+
+    def _pan_start(self, event) -> None:
+        if (event.button != 1 or getattr(event, "dblclick", False)
+                or event.inaxes is not self.axes or not self.has_content()
+                or event.x is None or event.y is None):
+            return
+        # The transform is FROZEN at the press: converting each motion with
+        # the live transform would feed every step back into the next one
+        # and the view would run away from the pointer.
+        self._pan = (event.x, event.y, self.axes.get_xlim(),
+                     self.axes.get_ylim(),
+                     self.axes.transData.inverted().frozen())
+        self.setCursor(Qt.ClosedHandCursor)
+
+    def _pan_move(self, event) -> None:
+        if self._pan is None or event.x is None or event.y is None:
+            return
+        x0, y0, xlim, ylim, inverse = self._pan
+        start = inverse.transform((x0, y0))
+        now = inverse.transform((event.x, event.y))
+        dx, dy = float(now[0] - start[0]), float(now[1] - start[1])
+        if not (math.isfinite(dx) and math.isfinite(dy)):
+            return
+        # Subtracting keeps the point under the pointer under the pointer;
+        # the transform already knows the x axis is inverted.
+        self.axes.set_xlim(xlim[0] - dx, xlim[1] - dx)
+        self.axes.set_ylim(ylim[0] - dy, ylim[1] - dy)
+        self.draw_idle()
+        self.zoomed.emit()
+
+    def _pan_end(self, event) -> None:
+        if self._pan is not None:
+            self._pan = None
+            self.unsetCursor()
 
     def wheelEvent(self, event):
         """Zoom x about the cursor; with Shift held, zoom y instead.
@@ -352,12 +397,31 @@ class CestPanel(QWidget):
         )
         self._show_fits.toggled.connect(self._refresh_plots)
 
+        # Use only the first N rows of the pseudo-2D -- to drop trailing
+        # increments that carry no signal (a nutation run past the useful
+        # range, a CEST list with blank tail rows). 0 means all rows.
+        self._row_limit = QSpinBox()
+        self._row_limit.setRange(0, 100000)
+        self._row_limit.setSpecialValueText("all")
+        self._row_limit.setPrefix("first ")
+        self._row_limit.setSuffix(" rows")
+        self._row_limit.setValue(0)
+        self._row_limit.setKeyboardTracking(False)
+        self._row_limit.setToolTip(
+            "Use only the first N rows (t1 increments) of the pseudo-2D for\n"
+            "both tabs and for added experiments. 'all' uses every row.\n"
+            "In CEST the matching saturation offsets are dropped with them."
+        )
+        self._row_limit.valueChanged.connect(self._on_row_limit_changed)
+
         header = QHBoxLayout()
         header.addWidget(open_button)
         header.addWidget(reload_button)
         header.addWidget(self._save_image_button)
         header.addWidget(QLabel("Source:"))
         header.addWidget(self._source, 1)
+        header.addWidget(QLabel("Rows:"))
+        header.addWidget(self._row_limit)
         header.addWidget(self._show_fits)
 
         self._notes = QPlainTextEdit()
@@ -769,9 +833,12 @@ class CestPanel(QWidget):
             QMessageBox.warning(self, "CEST", f"Could not load this experiment:\n{exc}")
             return
 
-        self._data = data
+        self._data_full = data
+        self._data = self._limited(data)
+        data = self._data
         self._data_path = expno
         self._offsets = None
+        self._offsets_full = None
         self._fit = None
         self._n_series = None
         self._z = None
@@ -791,7 +858,8 @@ class CestPanel(QWidget):
         if kind == "cest":
             try:
                 offsets, list_path = read_offsets(expno, data.sfo1_mhz)
-                self._offsets = offsets
+                self._offsets_full = offsets
+                self._offsets = self._limited_offsets(offsets)
                 if offsets is not None:
                     notes.append(
                         f"{offsets.size} saturation offsets from "
@@ -806,8 +874,10 @@ class CestPanel(QWidget):
                     "cannot be built without saturation offsets."
                 )
 
+        used = (f"{data.n_rows} of {self._data_full.n_rows} rows"
+                if data.n_rows < self._data_full.n_rows else f"{data.n_rows} rows")
         self._path_label.setText(
-            f"{expno}  \u2014  {data.n_rows} rows from {data.source}, "
+            f"{expno}  \u2014  {used} from {data.source}, "
             f"PULPROG {str(data.acqus.get('PULPROG', '?')).strip('<>')} "
             f"({kind})"
         )
@@ -845,6 +915,63 @@ class CestPanel(QWidget):
         self._update_z_span()
         self._update_n_span()
         self._tabs.setCurrentIndex(0 if kind == "nutation" else 1)
+
+    # ------------------------------------------------------------ row limit
+
+    def _row_count_limit(self) -> int:
+        return int(self._row_limit.value())
+
+    def _limited(self, data):
+        """`data` cut to the first N rows; the same object when no cut applies."""
+        n = self._row_count_limit()
+        if n <= 0 or n >= data.n_rows:
+            return data
+        return dataclasses.replace(data, rows=data.rows[:n])
+
+    def _limited_offsets(self, offsets):
+        n = self._row_count_limit()
+        if offsets is None or n <= 0 or n >= offsets.size:
+            return offsets
+        return offsets[:n]
+
+    def _on_row_limit_changed(self, _value=None) -> None:
+        """Re-cut the loaded experiment and redo whatever was already built.
+
+        Overlays keep the cut they were measured with: re-measuring them
+        silently would change curves the user has already compared.
+        """
+        full = getattr(self, "_data_full", None)
+        if full is None or self._data_path is None:
+            return
+        had_fit = self._fit is not None
+        had_z = self._z_display is not None
+        self._data = self._limited(full)
+        self._offsets = self._limited_offsets(getattr(self, "_offsets_full", None))
+        data = self._data
+        label = self._path_label.text()
+        head, sep, tail = label.partition("  \u2014  ")
+        if sep:
+            rest = tail.split(" from ", 1)[-1]
+            used = (f"{data.n_rows} of {full.n_rows} rows"
+                    if data.n_rows < full.n_rows else f"{data.n_rows} rows")
+            self._path_label.setText(f"{head}{sep}{used} from {rest}")
+        self._fit = None
+        self._n_series = None
+        self._z = None
+        self._z_display = None
+        self._z_fitted = None
+        self._peak_curves = []
+        self._n_plot.clear()
+        self._n_plot.draw_idle()
+        self._detect_peaks()
+        self._update_z_span()
+        self._update_n_span()
+        if had_fit:
+            self._fit_nutation()
+        if had_z:
+            self._build_z()
+        else:
+            self._redraw_z(reseed=True)
 
     # ------------------------------------------------------------- nutation
 
@@ -1644,6 +1771,9 @@ class CestPanel(QWidget):
             return f"{expno.name}: frequency list unreadable ({exc})"
         if offsets is None:
             return f"{expno.name}: no FQ1LIST, cannot build a Z-spectrum"
+        full_rows = data.n_rows
+        data = self._limited(data)
+        offsets = self._limited_offsets(offsets)
         rows = data.rows
         if rows.shape[0] > offsets.size:
             return (f"{expno.name}: {rows.shape[0]} rows but only "
@@ -1671,9 +1801,10 @@ class CestPanel(QWidget):
             z = self._measure_z(rows, data.ppm, offsets, data.sfo1_mhz, centre)
         except CestError as exc:
             return f"{expno.name}: could not build the Z-spectrum ({exc})"
-        label = self._add_overlay(
-            self._overlay_label(expno, data.acqus), z
-        )
+        label = self._overlay_label(expno, data.acqus)
+        if data.n_rows < full_rows:
+            label += f" [first {data.n_rows}]"
+        label = self._add_overlay(label, z)
         return f"added {label}, peak {centre:+.4f} ppm{note}"
 
     def compare(self, expnos) -> None:

@@ -1,6 +1,6 @@
 # HelSpin — User Manual
 
-Version 0.9.5
+Version 0.9.6
 
 Compare Bruker NMR spectra and build publication figures.
 
@@ -364,6 +364,20 @@ and leaves the measured points, residuals and reported numbers. Useful for
 judging a marginal dip against the data rather than against the model drawn
 through it.
 
+### Using only the first N rows
+
+**Rows:** in the header limits both tabs to the first N rows (t1
+increments) of the pseudo-2D — e.g. *first 16 rows* or *first 8 rows* — to
+drop trailing increments with no signal. *all* (the default) uses every row.
+
+- In CEST the matching saturation offsets are dropped with the rows, so
+  keep your I₀ reference offsets within the first N.
+- Whatever was already fitted or built is redone at once with the new cut.
+  The file path line shows e.g. "16 of 64 rows".
+- Experiments added for comparison use the same cut, and their legend entry
+  says so ("[first 16]"). Curves already overlaid keep the cut they were
+  measured with.
+
 ### Which data it reads
 
 **Raw `ser` by default.** `xf2` stores SI(F1) rows, and TopSpin defaults SI
@@ -522,7 +536,8 @@ The menu matches the main canvas:
   **Remove all overlays** (Z-spectrum).
 
 Scroll the wheel over the plot to zoom x about the cursor; hold Shift to
-zoom y; double-click to reset. The range boxes follow.
+zoom y; **drag with the left button to move the view**; double-click to
+reset. The range boxes follow.
 
 ### Carrier (O1P) and the offset axis
 
