@@ -312,7 +312,9 @@ X and Y offsets, zooming, sessions and export.
     menu specifically and it silently isn't there. Quit is now also an
     explicit toolbar button (far right, matching the reference screenshot
     this shell is modelled on) with `setMenuRole(NoRole)`, so it stays
-    exactly where it's put regardless of platform.
+    exactly where it's put regardless of platform. Since 0.9.8 it is red
+    and lives in a one-button toolbar of its own, so a narrow window can no
+    longer push it into the toolbar's "»" overflow.
 13. **Expanding a sample took "forever" over a network share.** The scan
     read every expno's `acqus` file, sequentially, before returning a single
     row -- one blocking round-trip per experiment. Measured on a simulated

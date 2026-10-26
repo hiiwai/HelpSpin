@@ -17,6 +17,7 @@ That folder is the input to the Inno Setup script (packaging/helspin.iss),
 which turns it into a single setup.exe.
 """
 
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_submodules
@@ -25,6 +26,13 @@ from PyInstaller.utils.hooks import collect_submodules
 # paths are relative to it. SPECPATH points at packaging/, one level down.
 ROOT = Path(SPECPATH).parent
 RES = ROOT / "helspin" / "resources"
+
+sys.path.insert(0, SPECPATH)
+from spec_support import write_build_files  # noqa: E402
+
+# VERSION travels inside the bundle (no package metadata there), and the
+# .exe's version resource is generated from pyproject on every build.
+VERSION, VERSION_FILE, VERSION_INFO = write_build_files(ROOT)
 
 # Ship the licence, notices and artwork INSIDE the bundle. The licence dialog
 # reads LICENSE.txt and NOTICE.txt from helspin/resources at run time, so they
@@ -35,6 +43,8 @@ datas = [
     (str(RES / "NOTICE.txt"), "helspin/resources"),
     (str(RES / "icon.png"), "helspin/resources"),
     (str(RES / "logo.png"), "helspin/resources"),
+    # Read by helspin/__init__.py: the frozen app's only source of its version.
+    (str(VERSION_FILE), "helspin"),
 ]
 
 # nmrglue is imported lazily and in places PyInstaller's static analysis
@@ -42,7 +52,9 @@ datas = [
 hiddenimports = collect_submodules("nmrglue")
 
 a = Analysis(
-    [str(ROOT / "helspin" / "__main__.py")],
+    # NOT helspin/__main__.py: an entry script runs outside its package, so
+    # that module's relative imports failed and the app died on launch.
+    [str(ROOT / "packaging" / "helspin_entry.py")],
     pathex=[str(ROOT)],
     binaries=[],
     datas=datas,
@@ -76,7 +88,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=str(RES / "icon.ico"),
-    version=str(ROOT / "packaging" / "version_info.txt"),
+    version=str(VERSION_INFO),
 )
 
 coll = COLLECT(

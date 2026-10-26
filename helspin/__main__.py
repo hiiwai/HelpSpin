@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QIcon, QKeySequence
+from PySide6.QtGui import QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -64,6 +64,7 @@ from .ui.browser import DatasetBrowser
 from .ui.preferences_dialog import PreferencesDialog
 from .ui.spectrum_canvas import SpectrumCanvas
 from .ui.spectrum_list_panel import SpectrumListPanel
+from .ui.toolbar_layout import ToolbarFitter, build_quit_toolbar
 
 APP_TITLE = "HelSpin"
 
@@ -246,6 +247,7 @@ class MainWindow(QMainWindow):
 
     def _build_toolbar(self) -> None:
         toolbar = QToolBar("Main", self)
+        toolbar.setObjectName("MainToolBar")
         toolbar.setMovable(False)
         toolbar.addAction("Add Data Root\u2026", self._add_data_root)
         refresh_action = toolbar.addAction("Refresh All", self._browser.refresh_all)
@@ -306,21 +308,23 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction("About", self._about)
 
-        # The reference screenshot this shell is modelled on has Quit as an
-        # explicit, visible button at the far right of the toolbar -- not
-        # only reachable through File. A stretch spacer pushes it there.
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        toolbar.addWidget(spacer)
-        quit_action = toolbar.addAction("Quit", self.close)
-        # Explicit role rather than relying on Qt's text-based heuristic:
-        # on macOS an action literally named "Quit" is auto-relocated into
-        # the application menu by default, which is fine for the File-menu
-        # Quit but would also silently empty this toolbar button if it
-        # applied here too. NoRole keeps this one exactly where it's put.
-        quit_action.setMenuRole(QAction.MenuRole.NoRole)
-
         self.addToolBar(toolbar)
+        self._toolbar = toolbar
+
+        # Quit is a red button pinned to the right end of the same row. It
+        # lives in a one-action toolbar of its own: when the row was too
+        # narrow, the main toolbar hid its LAST actions behind the "»"
+        # extension, so Quit (last) was the first to vanish into a second
+        # line. A single-action toolbar has no extension and cannot overflow;
+        # the main toolbar shrinks its text first and overflows only as a
+        # last resort. See helspin/ui/toolbar_layout.py and HANDOFF.md.
+        quit_bar, quit_action, quit_button = build_quit_toolbar(self, self.close)
+        self.addToolBar(quit_bar)
+        self._quit_toolbar = quit_bar
+        self._quit_action = quit_action
+        self._toolbar_fitter = ToolbarFitter(self, toolbar, quit_bar, quit_button)
+        self._toolbar_fitter.restyle_quit()
+        self._toolbar_fitter.refit()
 
     def _build_menu(self) -> None:
         """A conventional menu bar as well as the toolbar -- both are cheap

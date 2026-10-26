@@ -26,7 +26,7 @@ python packaging/build_installer.py
 That runs both stages and prints the path to the finished installer:
 
 ```
-dist/installer/HelSpin-0.5.4-setup.exe
+dist/installer/HelSpin-<version>-setup.exe
 ```
 
 The script reads the version from `pyproject.toml`, so a release needs no
@@ -42,6 +42,20 @@ iscc packaging/helspin.iss
 
 The first produces `dist/HelSpin/` (the app as a folder); the second wraps
 that folder into the setup.exe.
+
+### What the spec generates (do not edit by hand)
+
+The entry script is `packaging/helspin_entry.py`, not `helspin/__main__.py`:
+an entry script runs outside its package, and `__main__.py`'s relative
+imports made the built app crash on launch (0.9.7 and earlier).
+
+On every build the spec writes, under `build/helspin-version/`:
+
+- `VERSION` -- shipped inside the bundle; the app's only source of its own
+  version, since a bundle has no package metadata.
+- `version_info.txt` -- the .exe version resource (Properties -> Details).
+
+Both come from `pyproject.toml` via `packaging/spec_support.py`.
 
 ## What the installer does
 
@@ -132,7 +146,8 @@ pip install -e . pyinstaller
 
 Produces `dist/HelSpin-<version>-<arch>.dmg`. The script checks dependencies
 first, builds the bundle, ad-hoc signs it, runs it once with `--version` to
-prove it actually starts, then makes the image with an Applications symlink so
+prove it actually starts and reports the version in `pyproject.toml`, then
+makes the image with an Applications symlink so
 the window is a drag-to-install target.
 
 ### Architecture

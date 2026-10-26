@@ -1,6 +1,6 @@
 # HelSpin — User Manual
 
-Version 0.9.7
+Version 0.9.8
 
 Compare Bruker NMR spectra and build publication figures.
 
@@ -76,6 +76,14 @@ That reports, experiment by experiment, whether a plottable spectrum is
 actually there.
 
 ---
+
+### The toolbar
+
+**Quit** is the red button at the right end of the toolbar. It always stays
+there, whatever the window width. When the window is too narrow for every
+button, the other buttons get smaller text first; only if that is still not
+enough do the rightmost of them move behind **»** (click it to reach them).
+Widen the window and they return to normal size.
 
 ## 4. Arrangements: overlay and stacked
 

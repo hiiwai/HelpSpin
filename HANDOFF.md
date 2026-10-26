@@ -710,3 +710,41 @@ CEST markers live on `_Plot` (not the axes) and are redrawn by
 `draw_markers()` at the end of every draw, because every CEST redraw clears
 the axes. Vertical Z markers are in the CURRENT x unit and are converted in
 `_on_z_units_changed`.
+
+## Quit is pinned in its own toolbar (0.9.8)
+
+Do NOT move Quit back into the main toolbar, and do not give its toolbar a
+second action. QToolBar overflows from the END, so a Quit that is the last
+action of a crowded toolbar vanishes behind "»" first (reported). A toolbar
+with exactly one item has no extension button (QToolBarLayout adds one only
+for more than one item), so its minimum width equals its preferred width and
+the main window's toolbar layout always reserves it. It is added AFTER the
+main toolbar on the same line; the last toolbar on a line is stretched to the
+line's end, and its right-to-left layout direction puts the button at the
+right edge. Its toggle action is hidden so it cannot be switched off.
+
+`ToolbarFitter` (helspin/ui/toolbar_layout.py) shrinks the MAIN toolbar
+before it overflows: it measures the toolbar's natural width at each compact
+level once (re-measured when an action's text changes, on show, font or
+style change) and picks the least compact level that fits beside Quit. The
+choice is a function of the available width only, never of the current
+level -- that is what keeps a resize from oscillating. Level 0 clears the
+font override (`setFont(QFont())`) rather than setting an equal size, so the
+toolbar keeps following the system font. The compact font sets ONLY the
+size, so buttons keep their own family and weight (Clear stays bold).
+
+Quit's red comes from a style sheet that declares a border and padding: with
+a box, the style-sheet engine draws the button itself and honours the colour
+on every platform; with colour alone it hands drawing to the native style.
+
+## Frozen builds: entry script and version (0.9.8)
+
+Never point a PyInstaller spec at `helspin/__main__.py`: an entry script runs
+as a top-level module outside its package and the first relative import
+fails, so the bundle died on launch. Use `packaging/helspin_entry.py`.
+
+A bundle has no package metadata; `helspin/__init__.py` falls back to a
+`VERSION` file beside it, which the specs generate from pyproject
+(`packaging/spec_support.py`) together with the Windows version resource.
+Both live under `build/`, never in the repository.
+

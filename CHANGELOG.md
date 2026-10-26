@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.9.8 - 2026-10-26
+
+### Changed: Quit is red and always visible at the right end of the toolbar
+
+On a narrower window the toolbar used to hide its last buttons behind a
+"»" overflow (a second line), and Quit -- being last -- disappeared first.
+Quit now sits in a one-button toolbar of its own, pinned to the right end of
+the row, in bold red (a lighter red in dark mode). A one-button toolbar has
+no overflow, so Quit cannot be pushed off. It is no longer offered in the
+toolbar's right-click show/hide menu.
+
+When the row gets tight, the other buttons shrink first (smaller text in
+three steps, then tighter spacing); only if even the smallest size does not
+fit does the "»" overflow take the rightmost of them. Widening the window
+restores the normal look.
+
+### Fixed: the packaged app (PyInstaller) crashed on launch
+
+Both PyInstaller specs used `helspin/__main__.py` as the entry script, which
+runs outside its package, so its first relative import failed ("attempted
+relative import with no known parent package") and the built app never
+opened. A small entry script, `packaging/helspin_entry.py`, now imports it
+as `helspin.__main__`. Verified by building the bundle and launching it.
+
+### Fixed: the packaged app's version
+
+A bundle carries no package metadata, so the title bar and About would have
+said "0.0.0+unknown". The specs now ship a `VERSION` file read from
+`pyproject.toml` at build time. The Windows .exe version resource
+(Properties -> Details), a hand-written file stuck at 0.5.4, is now
+generated from the same version on every build.
+
+1250 tests (up from 1190).
+
 ## 0.9.7 - 2026-10-01
 
 ### Added: crosshair on the CEST plots

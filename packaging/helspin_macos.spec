@@ -26,6 +26,7 @@ PySide6 does not currently publish, so a single fat build is not available.
 Build on each architecture you need to support, or state the requirement.
 """
 
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_submodules
@@ -33,22 +34,14 @@ from PyInstaller.utils.hooks import collect_submodules
 ROOT = Path(SPECPATH).parent
 RES = ROOT / "helspin" / "resources"
 
+sys.path.insert(0, SPECPATH)
+from spec_support import write_build_files  # noqa: E402
 
-def _version() -> str:
-    """Read the version from pyproject rather than repeating it here.
-
-    A version baked into the spec is a version that silently goes stale: the
-    About dialog would say one thing and the bundle's Info.plist another, and
-    macOS uses the plist value for update checks and Finder's Get Info.
-    """
-    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    for line in text.splitlines():
-        if line.startswith("version"):
-            return line.split("=", 1)[1].strip().strip('"').strip("'")
-    raise SystemExit("cannot find version in pyproject.toml")
-
-
-VERSION = _version()
+# Read from pyproject rather than repeated here: a version baked into the spec
+# silently goes stale, and macOS uses the plist value for Finder's Get Info.
+# VERSION_FILE travels inside the bundle, because a frozen app has no package
+# metadata and would otherwise report "0.0.0+unknown" in its title and About.
+VERSION, VERSION_FILE, _VERSION_INFO = write_build_files(ROOT)
 
 # Ship the licence, notices and artwork INSIDE the bundle. The licence dialog
 # reads these from helspin/resources at run time, so they must land at the same
@@ -59,6 +52,8 @@ datas = [
     (str(RES / "NOTICE.txt"), "helspin/resources"),
     (str(RES / "icon.png"), "helspin/resources"),
     (str(RES / "logo.png"), "helspin/resources"),
+    # Read by helspin/__init__.py: the frozen app's only source of its version.
+    (str(VERSION_FILE), "helspin"),
 ]
 
 # nmrglue is imported lazily and in places PyInstaller's static analysis
@@ -66,7 +61,9 @@ datas = [
 hiddenimports = collect_submodules("nmrglue")
 
 a = Analysis(
-    [str(ROOT / "helspin" / "__main__.py")],
+    # NOT helspin/__main__.py: an entry script runs outside its package, so
+    # that module's relative imports failed and the app died on launch.
+    [str(ROOT / "packaging" / "helspin_entry.py")],
     pathex=[str(ROOT)],
     binaries=[],
     datas=datas,

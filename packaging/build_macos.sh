@@ -22,7 +22,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
     exit 1
 fi
 
-VERSION=$(grep '^version' pyproject.toml | head -1 | cut -d'"' -f2)
+VERSION=$(python3 -c 'import sys; sys.path.insert(0, "packaging"); from spec_support import read_version; print(read_version("."))')
 ARCH=$(uname -m)
 APP="dist/HelSpin.app"
 DMG="dist/HelSpin-${VERSION}-${ARCH}.dmg"
@@ -60,8 +60,14 @@ echo "==> Verifying the bundle launches"
 # --version exits immediately, so this catches a bundle that is missing a
 # library WITHOUT needing a window server. A broken bundle usually fails here
 # rather than at the user's first double-click.
-if ! "$APP/Contents/MacOS/HelSpin" --version; then
+if ! REPORTED=$("$APP/Contents/MacOS/HelSpin" --version); then
     echo "error: the built application does not run" >&2
+    exit 1
+fi
+echo "    $REPORTED"
+# A bundle without its VERSION file still runs but says "0.0.0+unknown".
+if [[ "$REPORTED" != "HelSpin ${VERSION}" ]]; then
+    echo "error: the app reports '$REPORTED', expected 'HelSpin ${VERSION}'" >&2
     exit 1
 fi
 

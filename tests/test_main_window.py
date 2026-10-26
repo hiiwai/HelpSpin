@@ -164,13 +164,16 @@ def test_about_dialog_does_not_raise(qtbot, monkeypatch):
 
 
 def test_toolbar_has_the_expected_actions(qtbot):
+    """Two toolbars on one row: everything in "Main", Quit alone in its own
+    pinned toolbar so it can never be pushed into the overflow."""
     from PySide6.QtWidgets import QToolBar
 
     window = MainWindow()
     qtbot.addWidget(window)
     toolbars = window.findChildren(QToolBar)
-    assert len(toolbars) == 1
-    labels = [a.text() for a in toolbars[0].actions() if a.text()]
+    assert sorted(t.objectName() for t in toolbars) == ["MainToolBar", "QuitToolBar"]
+    main = window.findChild(QToolBar, "MainToolBar")
+    labels = [a.text() for a in main.actions() if a.text()]
     assert any("Add Data Root" in t for t in labels)
     assert any("Refresh All" in t for t in labels)
     # One toggle whose label names the CURRENT mode, plus Clear.
@@ -178,19 +181,26 @@ def test_toolbar_has_the_expected_actions(qtbot):
     assert any("Clear" in t for t in labels)
     assert any("Preferences" in t for t in labels)
     assert any("About" in t for t in labels)
-    assert any(t == "Quit" for t in labels)
+    assert "Quit" not in labels
+    quit_bar = window.findChild(QToolBar, "QuitToolBar")
+    assert [a.text() for a in quit_bar.actions()] == ["Quit"]
 
 
-def test_toolbar_quit_is_the_last_action(qtbot):
-    """Matches the reference app: Quit sits at the far right, separated
-    from everything else by the stretch spacer."""
-    from PySide6.QtWidgets import QToolBar
+def test_toolbar_quit_is_at_the_far_right(qtbot):
+    """Matches the reference app: Quit sits at the far right of the row."""
+    from PySide6.QtWidgets import QApplication, QToolBar, QToolButton
 
     window = MainWindow()
     qtbot.addWidget(window)
-    toolbar = window.findChild(QToolBar)
-    actions_with_text = [a for a in toolbar.actions() if a.text()]
-    assert actions_with_text[-1].text() == "Quit"
+    window.show()
+    qtbot.waitExposed(window)
+    QApplication.processEvents()
+    main = window.findChild(QToolBar, "MainToolBar")
+    button = window.findChild(QToolButton, "helspinQuitButton")
+    left = button.mapTo(window, button.rect().topLeft()).x()
+    right = left + button.width()
+    assert window.width() - right <= 8
+    assert left >= main.geometry().right()
 
 
 def test_toolbar_quit_action_closes_the_window(qtbot):
@@ -201,7 +211,7 @@ def test_toolbar_quit_action_closes_the_window(qtbot):
     window.show()
     assert window.isVisible()
 
-    toolbar = window.findChild(QToolBar)
+    toolbar = window.findChild(QToolBar, "QuitToolBar")
     quit_action = next(a for a in toolbar.actions() if a.text() == "Quit")
     quit_action.trigger()
 
@@ -232,7 +242,7 @@ def test_refresh_all_toolbar_action_actually_refreshes(qtbot, tmp_path):
     (root_dir / "sample_b" / "12" / "fid").write_bytes(b"\x00")
     (root_dir / "sample_b" / "12" / "pdata" / "1").mkdir(parents=True)
 
-    toolbar = window.findChild(QToolBar)
+    toolbar = window.findChild(QToolBar, "MainToolBar")
     refresh_action = next(a for a in toolbar.actions() if a.text() == "Refresh All")
     refresh_action.trigger()
 
