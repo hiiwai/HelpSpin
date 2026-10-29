@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.9.9 - 2026-10-29
+
+### Fixed: wrong ppm calibration on STSR/STSI-stripped spectra
+
+A spectrum processed with a strip (STSR/STSI) stores only a cropped region of
+the processed data, but nmrglue's `guess_udic` returns the sweep width and
+carrier of the *whole* spectrum — its own docstring warns these values "are
+incorrect" when STSI/STSR are set. HelSpin built its ppm axis straight from
+them, so the full spectral width was spread across the cropped points and the
+axis was badly miscalibrated (a ~24 ppm strip could be labelled as the full
+~199 ppm). Reported from 2D ¹H–¹³C data; it affected 1D and 2D alike.
+
+The reader now reconstructs the strip's true sweep width and carrier from
+FTSIZE, STSR and STSI (the real resolution survives the crop in FTSIZE). It is
+applied per dimension and only when that dimension is genuinely stripped, so:
+
+- a normal, unstripped spectrum is never touched (an unstripped axis has
+  STSI = 0, where the naive correction would zero the sweep width);
+- in 2D, a strip on F2 no longer disturbs an unstripped F1 (and vice versa);
+- stale or inconsistent strip metadata (STSI not matching the stored data
+  length) is ignored rather than allowed to corrupt a correct axis.
+
+The CEST direct-dimension axis had the same latent fault (it divided by the
+stored point count instead of the full transform size) and is fixed the same
+way — a no-op for unstripped data.
+
+Added `tests/test_strip_stsr_stsi.py`: unit tests for the guards and
+end-to-end 1D and 2D reads, including a check that the result matches
+nmrglue's own `strip_fake` reference.
+
 ## 0.9.8 - 2026-10-26
 
 ### Changed: Quit is red and always visible at the right end of the toolbar

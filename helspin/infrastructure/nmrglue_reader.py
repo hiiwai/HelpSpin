@@ -101,6 +101,52 @@ def _as_float(value, default: float = 1.0) -> float:
         return default
 
 
+def _strip_corrected(sw_hz: float, car_hz: float, proc: dict, size: int):
+    """Correct sweep width and carrier for a TopSpin STSR/STSI strip.
+
+    When a processed spectrum is cropped with STSR (strip start) and STSI
+    (strip size), only that sub-region is stored, but nmrglue's ``guess_udic``
+    still returns the sweep width and carrier of the WHOLE spectrum -- its own
+    docstring warns that with STSI/STSR set the returned values "are
+    incorrect". Built into an axis, that spreads the full spectral width across
+    the cropped points, so the ppm calibration is completely wrong (a 24 ppm
+    strip gets labelled as the full 199 ppm). This was the reported bug.
+
+    The real digital resolution survives the crop in ``FTSIZE`` (the full FT
+    size), so the strip's true sweep width is ``(SW_full/FTSIZE) * STSI`` and
+    its centre shifts by where the strip sits in the full spectrum. This is the
+    same arithmetic as nmrglue's ``strip_fake`` option, but applied here
+    per-dimension and only when the dimension is genuinely stripped -- the
+    global flag would zero the sweep width of any dimension left unstripped
+    (STSI = 0), which is exactly the F1 of most 2D spectra.
+
+    Returns the corrected ``(sw_hz, car_hz)``, or the inputs unchanged when the
+    dimension is not stripped or the parameters are missing or inconsistent, so
+    a normal spectrum is never touched.
+    """
+    try:
+        ftsize = int(_as_float(proc.get("FTSIZE"), 0.0))
+        stsi = int(_as_float(proc.get("STSI"), 0.0))
+        stsr = int(_as_float(proc.get("STSR"), 0.0))
+    except (AttributeError, TypeError, ValueError):
+        return sw_hz, car_hz
+
+    # A genuine strip keeps fewer points than the full transform, the stored
+    # data length matches STSI, and the start is within range. Anything else
+    # (STSI = 0 on an unstripped axis, stale metadata whose STSI no longer
+    # matches the data, a missing FTSIZE) leaves the axis exactly as it was.
+    if not (ftsize > 0 and 0 < stsi < ftsize and stsi == size and 0 <= stsr):
+        return sw_hz, car_hz
+    if sw_hz <= 0:
+        return sw_hz, car_hz
+
+    hz_per_point = sw_hz / ftsize
+    strip_centre = hz_per_point * stsr + hz_per_point * stsi / 2.0
+    car_hz = car_hz - (strip_centre - sw_hz / 2.0)
+    sw_hz = hz_per_point * stsi
+    return sw_hz, car_hz
+
+
 def _nmrglue():
     """Import nmrglue on first use, not at start-up.
 
@@ -396,6 +442,12 @@ class NmrglueReader:
                 f"sw={sw_hz}, obs={obs_mhz}"
             )
 
+        # Correct the axis when the data was cropped with STSR/STSI; a no-op on
+        # a normal spectrum. procs carries the direct dimension's parameters.
+        sw_hz, car_hz = _strip_corrected(
+            sw_hz, car_hz, dic.get("procs", {}), data.size
+        )
+
         acqus_values = read_acqus(Path(path) / "acqus")
         ns = int(float(acqus_values.get("NS", 1) or 1))
         rg = float(acqus_values.get("RG", 1.0) or 1.0)
@@ -431,7 +483,7 @@ class NmrglueReader:
 
         udic = ng.bruker.guess_udic(dic, data)
 
-        def axis_for(dim: int, size: int) -> AxisCalibration:
+        def axis_for(dim: int, size: int, proc: dict) -> AxisCalibration:
             u = udic[dim]
             sw_hz = float(u.get("sw") or 0.0)
             obs_mhz = float(u.get("obs") or 0.0)
@@ -439,18 +491,24 @@ class NmrglueReader:
                 raise MissingParameter(
                     f"cannot calibrate ppm axis (dim {dim}) for {pdata_dir}"
                 )
+            car_hz = float(u.get("car") or 0.0)
+            # Correct this dimension if it was cropped with STSR/STSI; a no-op
+            # otherwise. Each dimension is handled on its own, so a strip on
+            # F2 does not disturb an unstripped F1 (and vice versa).
+            sw_hz, car_hz = _strip_corrected(sw_hz, car_hz, proc, size)
             return AxisCalibration(
                 size=size,
                 sw_hz=sw_hz,
                 obs_mhz=obs_mhz,
-                car_hz=float(u.get("car") or 0.0),
+                car_hz=car_hz,
                 nucleus=str(u.get("label") or ""),
             )
 
         # udic dim 0 is the INDIRECT (F1) dimension, dim 1 is direct (F2);
-        # data is indexed [f1, f2], so sizes line up with that order.
-        axis_f1 = axis_for(0, data.shape[0])
-        axis_f2 = axis_for(1, data.shape[1])
+        # data is indexed [f1, f2], so sizes line up with that order. The
+        # strip parameters live in proc2s for F1 and procs for F2.
+        axis_f1 = axis_for(0, data.shape[0], dic.get("proc2s", {}))
+        axis_f2 = axis_for(1, data.shape[1], dic.get("procs", {}))
 
         acqus_values = read_acqus(Path(path) / "acqus")
         ns = int(float(acqus_values.get("NS", 1) or 1))

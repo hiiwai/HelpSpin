@@ -151,7 +151,18 @@ def _ppm_axis(procs: dict, acqus: dict, size: int) -> np.ndarray:
     sw_hz = float(acqus.get("SW_h", 0.0) or 0.0)
     if sf <= 0 or sw_hz <= 0 or size <= 0:
         raise CestError(f"cannot build a ppm axis: SF={sf}, SW_h={sw_hz}, size={size}")
-    return offset - np.arange(size, dtype=np.float64) * (sw_hz / sf) / size
+    # The ppm-per-point is set by the FULL transform size, which survives a
+    # STSR/STSI strip in FTSIZE. Dividing by the stored point count instead
+    # stretches a cropped direct dimension across the full sweep width -- the
+    # same miscalibration the main reader had. OFFSET already marks the strip's
+    # left edge, so only the step needs the full size. Falls back to the stored
+    # count when FTSIZE is absent, which is the unstripped case anyway.
+    try:
+        ftsize = int(float(procs.get("FTSIZE", 0) or 0))
+    except (TypeError, ValueError):
+        ftsize = 0
+    points = ftsize if ftsize >= size else size
+    return offset - np.arange(size, dtype=np.float64) * (sw_hz / sf) / points
 
 
 def _process_ser(expno: Path, acqus: dict, procs: dict, expected_rows: int = 0):
