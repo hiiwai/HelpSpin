@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.10 - 2026-10-29
+
+### Fixed: pinned markers were invisible in 2D mode
+
+Horizontal and vertical markers were drawn only in the 1D rendering path, so
+they disappeared the moment a 2D spectrum was shown -- the lines were still
+stored, just never painted. They now draw in both 2D layouts: on the contour
+axes in Overlay, and on every panel in side-by-side view (with the value
+written once rather than over each panel). Both F1 and F2 markers are
+meaningful on a 2D map. (Add them by right-clicking the plot.)
+
+### Fixed: marker colour/width/style was not remembered
+
+The marker appearance set in Preferences is a nested value, and it was dropped
+by both the save and the load of display preferences, so any change reverted to
+the default crosshair look on the next launch. It now persists. Marker colour,
+thickness, dash and opacity are in Preferences; the default still matches the
+cursor so a marker reads as a pinned cursor position until you change it.
+
 ## 0.9.9 - 2026-10-29
 
 ### Fixed: wrong ppm calibration on STSR/STSI-stripped spectra

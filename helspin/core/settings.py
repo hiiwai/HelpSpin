@@ -169,7 +169,36 @@ def load_display_prefs() -> dict:
             out[key] = cast(parsed[key])
         except (TypeError, ValueError):
             continue      # a bad value falls back to the default
+    # marker_style is a nested dict, not a scalar, so it is handled on its own
+    # rather than through the cast loop above. It was previously dropped by
+    # both save and load -- the dialog changed the markers but the change was
+    # forgotten on the next launch.
+    marker = _sanitize_marker_style(parsed.get("marker_style"))
+    if marker:
+        out["marker_style"] = marker
     return out
+
+
+# The fields of a marker style and how to coerce each; anything else in a
+# stored marker_style is ignored.
+_MARKER_STYLE_FIELDS = {"color": str, "width": float, "dash": str, "alpha": float}
+
+
+def _sanitize_marker_style(value):
+    """A marker style dict with only known, correctly typed fields, or None.
+
+    Treated as untrusted input like the rest of the settings file, so a
+    malformed entry degrades to None rather than reaching the canvas."""
+    if not isinstance(value, dict):
+        return None
+    out = {}
+    for key, cast in _MARKER_STYLE_FIELDS.items():
+        if key in value and value[key] is not None:
+            try:
+                out[key] = cast(value[key])
+            except (TypeError, ValueError):
+                continue
+    return out or None
 
 
 def save_display_prefs(values: dict) -> None:
@@ -179,6 +208,9 @@ def save_display_prefs(values: dict) -> None:
         for key in _DISPLAY_FIELDS
         if key in values and values[key] is not None
     }
+    marker = _sanitize_marker_style(values.get("marker_style"))
+    if marker:
+        keep["marker_style"] = marker
     settings = _settings()
     settings.setValue(_DISPLAY_KEY, json.dumps(keep))
     settings.sync()

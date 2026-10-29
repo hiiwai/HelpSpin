@@ -88,3 +88,38 @@ def test_settings_value_that_is_not_a_list_of_dicts():
 def test_partial_dict_missing_required_keys_is_skipped_not_fatal():
     settings_module._settings().setValue("data_roots", '[{"name": "no path field"}]')
     assert load_data_roots() == []
+
+
+def test_marker_style_round_trips(tmp_path, monkeypatch):
+    """marker_style is a nested dict and was dropped by both save and load, so
+    a changed marker reverted to the crosshair style on the next launch."""
+    from PySide6.QtCore import QSettings
+
+    from helspin.core import settings as settings_module
+
+    store = QSettings(str(tmp_path / "p.ini"), QSettings.Format.IniFormat)
+    monkeypatch.setattr(settings_module, "_settings", lambda: store)
+
+    settings_module.save_display_prefs({
+        "cursor_decimals": 2,
+        "marker_style": {"color": "#CC0000", "width": 1.5, "dash": "-",
+                         "alpha": 0.9},
+    })
+    out = settings_module.load_display_prefs()
+    assert out["marker_style"] == {
+        "color": "#CC0000", "width": 1.5, "dash": "-", "alpha": 0.9
+    }
+
+
+def test_a_malformed_marker_style_is_ignored(tmp_path, monkeypatch):
+    from PySide6.QtCore import QSettings
+
+    from helspin.core import settings as settings_module
+
+    store = QSettings(str(tmp_path / "p.ini"), QSettings.Format.IniFormat)
+    monkeypatch.setattr(settings_module, "_settings", lambda: store)
+    store.setValue(settings_module._DISPLAY_KEY,
+                   '{"marker_style": "not a dict", "cursor_decimals": 3}')
+    out = settings_module.load_display_prefs()
+    assert "marker_style" not in out
+    assert out["cursor_decimals"] == 3

@@ -2725,3 +2725,50 @@ def test_right_click_enables_the_marker_entries(qtbot):
 
     assert canvas.add_marker("vertical") is True
     assert len(canvas.markers()) == 1
+
+
+def test_markers_are_drawn_in_2d_overlay(qtbot):
+    """Regression: markers were drawn only in the 1D path, so they disappeared
+    the moment a 2D spectrum was shown. Both F1 and F2 markers are meaningful
+    on a contour map and must render."""
+    canvas = SpectrumCanvas(reader=Reader2D())
+    qtbot.addWidget(canvas)
+    canvas.set_arrangement(canvas.ARRANGEMENT_OVERLAY)
+    canvas.handle_mime_data(mime_for(item2d()))
+    qtbot.waitUntil(lambda: len(canvas.traces) == 1, timeout=3000)
+
+    canvas.add_marker("vertical", 2.0)
+    canvas.add_marker("horizontal", 25.0)
+
+    # contours are collections; the two markers are the only Line2D artists.
+    lines = [line for ax in canvas._figure.axes for line in ax.lines]
+    assert len(lines) >= 2, "markers must be drawn on the 2D map"
+
+
+def test_markers_are_drawn_on_every_2d_panel(qtbot):
+    """In side-by-side panels a shared F1/F2 marker should show in each panel,
+    with its value written once rather than over every panel."""
+    canvas = SpectrumCanvas(reader=Reader2D())
+    qtbot.addWidget(canvas)
+    canvas.set_arrangement(canvas.ARRANGEMENT_STACKED)   # 2D stacked = panels
+    canvas.handle_mime_data(mime_for(item2d("/d/a", "A"), item2d("/d/b", "B")))
+    qtbot.waitUntil(lambda: len(canvas.traces) == 2, timeout=3000)
+
+    canvas.add_marker("vertical", 2.0)
+
+    panels = [ax for ax in canvas._figure.axes if ax.lines]
+    assert len(panels) >= 2, "the marker must appear in every panel"
+
+
+def test_markers_survive_switching_to_2d(qtbot):
+    """A marker placed in 1D must still be there after a 2D spectrum loads."""
+    canvas = SpectrumCanvas(reader=Reader2D())
+    qtbot.addWidget(canvas)
+    canvas.add_marker("vertical", 3.0)
+    assert canvas.markers() == [("vertical", 3.0)]
+
+    canvas.handle_mime_data(mime_for(item2d()))
+    qtbot.waitUntil(lambda: len(canvas.traces) == 1, timeout=3000)
+    assert canvas.markers() == [("vertical", 3.0)], "markers are data, not view"
+    lines = [line for ax in canvas._figure.axes for line in ax.lines]
+    assert len(lines) >= 1

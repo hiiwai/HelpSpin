@@ -1634,6 +1634,10 @@ class SpectrumCanvas(QWidget):
                 )
             one_d_axes.set_xlabel("ppm")
 
+        # Pinned markers on the contour axes -- both F1 and F2 markers are
+        # meaningful on a 2D map.
+        self._draw_markers(self._axes)
+
         self._figure.tight_layout(rect=(0, 0, self.RIGHT_MARGIN, 1))
         self._canvas.draw_idle()
 
@@ -1678,6 +1682,12 @@ class SpectrumCanvas(QWidget):
             ax.set_xlim(*f2)   # descending, NMR convention
             ax.set_ylim(*f1)
         axes_list[0].set_ylabel("F1 (ppm)")
+
+        # Markers on every 2D panel so a shared F1/F2 line is visible across
+        # all of them; the value is written once, on the first panel, rather
+        # than repeated over each.
+        for index, ax in enumerate(axes_list[:len(panels)]):
+            self._draw_markers(ax, label=(index == 0))
 
         if one_d:
             ax = axes_list[-1]
@@ -2219,33 +2229,44 @@ class SpectrumCanvas(QWidget):
             self._markers.clear()
             self._redraw()
 
-    def _draw_markers(self) -> None:
-        """Draw pinned markers, each labelled with its value."""
+    def _draw_markers(self, axes=None, label: bool = True) -> None:
+        """Draw pinned markers on ``axes`` (the primary axes by default).
+
+        Takes an explicit axes so the 2D paths can draw markers too: the 1D
+        redraw calls this on its single axes, 2D overlay on the map axes, and
+        2D side-by-side panels on every panel (``label`` suppressed on all but
+        the first, so the value is written once instead of over every panel).
+        Markers used to be drawn only in the 1D path, so they vanished the
+        moment a 2D spectrum was shown -- the reported regression.
+        """
+        ax = axes if axes is not None else self._axes
         style = self._marker_style
         digits = self._cursor_decimals
         for orientation, value in self._markers:
             if orientation == "vertical":
-                self._axes.axvline(
+                ax.axvline(
                     value, color=style["color"], linewidth=style["width"],
                     linestyle=style["dash"], alpha=style["alpha"],
                 )
-                self._axes.text(
-                    value, 1.005, f"{value:.{digits}f}",
-                    transform=self._axes.get_xaxis_transform(),
-                    ha="center", va="bottom", fontsize=8,
-                    color=style["color"], clip_on=False,
-                )
+                if label:
+                    ax.text(
+                        value, 1.005, f"{value:.{digits}f}",
+                        transform=ax.get_xaxis_transform(),
+                        ha="center", va="bottom", fontsize=8,
+                        color=style["color"], clip_on=False,
+                    )
             else:
-                self._axes.axhline(
+                ax.axhline(
                     value, color=style["color"], linewidth=style["width"],
                     linestyle=style["dash"], alpha=style["alpha"],
                 )
-                self._axes.text(
-                    1.002, value, f"{value:.{digits}f}",
-                    transform=self._axes.get_yaxis_transform(),
-                    ha="left", va="center", fontsize=8,
-                    color=style["color"], clip_on=False,
-                )
+                if label:
+                    ax.text(
+                        1.002, value, f"{value:.{digits}f}",
+                        transform=ax.get_yaxis_transform(),
+                        ha="left", va="center", fontsize=8,
+                        color=style["color"], clip_on=False,
+                    )
 
     def _on_context_menu(self, pos) -> None:
         if not self._traces:
