@@ -45,43 +45,79 @@ one or two levels above your samples is much faster than one near the drive
 root. If nothing is found, the status bar says so and states how deep it
 looked.
 
-## Installing on Linux
+## Installing
 
-See [INSTALL.md](INSTALL.md#linux-one-extra-step). One system library
-(`libxcb-cursor0` or your distribution's equivalent) must be installed before
-the first run — pip cannot supply it, and without it Qt fails to start with a
-misleading "platform plugin could not be initialized" message.
+HelSpin installs from a release zip into a dedicated Python environment, and
+runs on macOS, Windows and Linux. There is no double-click installer; the steps
+below use conda, which is the same on every platform.
+
+Download the latest `helspin-<version>.zip` from the
+[**Releases page**](https://github.com/hiiwai/HelpSpin/releases/latest), or
+install straight from a tag (see the end of this section). Use a **dedicated
+environment** — HelSpin pins `numpy<2.5` (nmrglue crashes on import with newer
+numpy), so installing into a shared environment can disturb other tools. Let
+pip install everything, including PySide6; do **not** `conda install pyside6`
+first, as a conda Qt beside a pip Qt causes DLL conflicts.
+
+### macOS and Linux
+
+```bash
+conda create -n helspin python=3.12
+conda activate helspin
+pip install ~/Downloads/helspin-<version>.zip
+helspin-gui                 # the app
+helspin --version           # console form, for --version / --check
+```
+
+**Linux only:** one system library must be present first —
+`sudo apt install libxcb-cursor0` (or your distribution's equivalent). Without
+it Qt fails to start with a misleading "platform plugin could not be
+initialized" message. See [INSTALL.md](INSTALL.md#linux-one-extra-step).
+
+### Windows
+
+Use the **Anaconda Prompt** (or PowerShell). Note that PowerShell expands the
+Downloads path as `$env:USERPROFILE`, not `%USERPROFILE%`:
+
+```powershell
+conda create -n helspin python=3.12
+conda activate helspin
+pip install "$env:USERPROFILE\Downloads\helspin-<version>.zip"
+helspin-gui
+```
+
+Tip: type `pip install ` (trailing space), then drag the zip from File Explorer
+into the window to paste its full path.
+
+### Upgrading
+
+**Close HelSpin first** — the operating system locks the running executable, and
+an install over a running app fails half-way (`WinError 32` on Windows). Then:
+
+```bash
+conda activate helspin
+pip install ~/Downloads/helspin-<newer-version>.zip   # Windows: "$env:USERPROFILE\Downloads\..."
+```
+
+No need to uninstall first; pip replaces the old version. Confirm with
+`helspin --version`.
+
+### Installing straight from GitHub
+
+Instead of downloading the zip, you can install a tagged version directly:
+
+```bash
+pip install https://github.com/hiiwai/HelpSpin/archive/refs/tags/v0.9.10.zip
+```
+
+Swap the tag for any version on the
+[Releases page](https://github.com/hiiwai/HelpSpin/releases).
+
+### Data roots
 
 Symlinked data roots are supported: if your root is a folder of links to the
 real instrument mounts, HelSpin walks through them, and links pointing back at
 a parent are detected rather than followed forever.
-
-## Installing on Windows 11
-
-Development is macOS-first; Windows runs from a Python environment (there is
-no bundled installer yet). Everything below is PowerShell.
-
-```powershell
-# 1. Python 3.12 from python.org or the Store. Tick "Add python.exe to PATH".
-python --version                     # expect 3.11 or newer
-
-# 2. A virtual environment, so HelSpin cannot disturb anything else
-cd $HOME
-python -m venv helspin-env
-.\helspin-env\Scripts\Activate.ps1
-
-# 3. Install from the delivered zip
-pip install --upgrade pip
-pip install path\to\helspin-0.4.8.zip
-
-# 4. Run it
-helspin-gui                          # no console window
-helspin --version                    # console version, for --version/--check
-```
-
-If `Activate.ps1` is blocked, run
-`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once and reopen the
-terminal.
 
 ### If `helspin-gui` will not run ("Access is denied")
 
