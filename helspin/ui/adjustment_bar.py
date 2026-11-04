@@ -15,16 +15,18 @@ the view half, built now so the shell layout is real rather than a mockup.
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-
-from ..core.settings import load_recent_ranges, save_recent_ranges
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QWidget,
 )
+
+from ..core.settings import load_recent_ranges, save_recent_ranges
 
 MAX_RECENT_RANGES = 8
 
@@ -51,6 +53,11 @@ class AdjustmentBar(QWidget):
         # enough to be recent. They are persisted now, and seeded with useful
         # defaults so the control does something on a first run.
         self._recent: list[tuple[float, float]] = load_recent_ranges()
+        # The pair currently on the plot -- whatever was last applied here or
+        # pushed in from a zoom on the canvas. Unapplied typing is put back to
+        # this when the user leaves the boxes for the plot (see
+        # _on_range_focus_lost).
+        self._shown: tuple[float, float] = (0.0, 0.0)
 
         self._full_button = QPushButton("Full")
         self._full_button.clicked.connect(self._on_full_clicked)
@@ -61,12 +68,10 @@ class AdjustmentBar(QWidget):
         self._left_spin.setSuffix(" ppm")
         self._left_spin.setToolTip(
             "Left edge of the plot: the HIGHER ppm value, per NMR convention.\n"
-            "Either order can be typed; the boxes normalise on Apply."
+            "Either order can be typed; the boxes normalise on Apply.\n"
+            "Enter or Apply shows the range. Clicking the plot instead\n"
+            "keeps the range already shown."
         )
-        # Applied when editing finishes (Enter / tab out) as well as via the
-        # Apply button. Both values are always read TOGETHER and normalised,
-        # so a half-typed pair can never be applied in a wrong order.
-        self._left_spin.editingFinished.connect(self._on_range_edited)
 
         self._right_spin = QDoubleSpinBox()
         self._right_spin.setRange(-1000.0, 1000.0)
@@ -75,7 +80,24 @@ class AdjustmentBar(QWidget):
         self._right_spin.setToolTip(
             "Right edge of the plot: the LOWER ppm value."
         )
-        self._right_spin.editingFinished.connect(self._on_range_edited)
+        # A typed range is applied by Enter or Apply only -- never because
+        # focus moved. It used to apply on editingFinished, which Qt also
+        # emits when the box merely loses focus, so:
+        #   * clicking the plot applied whatever the boxes held, half-typed
+        #     or not -- the reported "click on the canvas gives a nonsense x
+        #     range";
+        #   * moving from Left to Right applied a MIXED pair (new left, old
+        #     right) and the normalisation could swap the typed value into
+        #     the other box.
+        # Leaving the boxes for anywhere else in the window puts back the
+        # range on the plot, so the boxes never claim a range not shown.
+        for spin in (self._left_spin, self._right_spin):
+            # Return/Enter arrives as the inner line edit's returnPressed;
+            # editingFinished alone cannot tell Enter from a lost focus.
+            editor = spin.findChild(QLineEdit)
+            if editor is not None:
+                editor.returnPressed.connect(self._on_range_edited)
+            spin.editingFinished.connect(self._on_range_focus_lost)
 
         self._recent_combo = QComboBox()
         self._recent_combo.setPlaceholderText("Recent ranges")
@@ -189,6 +211,32 @@ class AdjustmentBar(QWidget):
     def _on_full_clicked(self) -> None:
         self.fullRequested.emit()
 
+    def _on_range_focus_lost(self) -> None:
+        """A box finished editing without Enter: decide whether to revert.
+
+        Qt emits editingFinished for Enter too, and when the box's own
+        context menu opens; in both the box still has focus, and Enter is
+        handled by returnPressed. Otherwise focus has gone somewhere:
+
+        * within this bar (the other box, Apply, Full, Recent, the zoom
+          toggles) -- keep the typing; Apply or Enter will use it. Apply in
+          particular takes focus on Windows BEFORE its click lands, so
+          reverting here would make Apply apply the old range;
+        * to another window, or out of the application -- keep it too: the
+          user is coming back, and the box gets its focus back with them;
+        * to anything else in this window (the plot, the spectrum list,
+          the explorer) -- the user has left without applying, so the boxes
+          show the range on the plot again.
+        """
+        if self._left_spin.hasFocus() or self._right_spin.hasFocus():
+            return
+        focus = QApplication.focusWidget()
+        if focus is None or focus.window() is not self.window():
+            return
+        if self.isAncestorOf(focus):
+            return
+        self._show_range(*self._shown)
+
     def _on_range_edited(self) -> None:
         """Accept the two values in EITHER order and normalise.
 
@@ -259,7 +307,13 @@ class AdjustmentBar(QWidget):
         self.f1RangeChanged.emit(high, low)
 
     def _show_range(self, high: float, low: float) -> None:
-        """Put the pair in the boxes without re-triggering an apply."""
+        """Put the pair in the boxes without re-triggering an apply.
+
+        Every path that puts a range ON THE PLOT comes through here (Apply,
+        Enter, Recent, and set_range from canvas zooms), so it is also where
+        the range on the plot is remembered.
+        """
+        self._shown = (high, low)
         self._left_spin.blockSignals(True)
         self._right_spin.blockSignals(True)
         self._left_spin.setValue(high)

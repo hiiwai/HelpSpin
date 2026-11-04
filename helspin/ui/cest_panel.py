@@ -76,7 +76,7 @@ from ..infrastructure.cest_reader import (
 )
 from ..services.cest_fit import fit_dip, fit_two_dips, polish_nutation
 from .dataset_model import MIME_DATASET
-from .figure_export import EXPORT_FILTERS, save_figure
+from .figure_export import EXPORT_FILTERS, copy_figure_to_clipboard, save_figure
 
 MEASURE_MODES = (("Integral", "integral"), ("Peak height", "height"),
                  ("Fixed point", "fixed"))
@@ -2092,6 +2092,28 @@ class CestPanel(QWidget):
             raise CestError(f"could not write {path}: {exc}") from exc
         return path
 
+    def copy_image(self, plot=None, dpi: int = IMAGE_DPI, clipboard=None) -> None:
+        """Put a plot on the clipboard -- the same picture save_image writes.
+
+        `plot` defaults to the one on the current tab. Raises CestError when
+        nothing is plotted or the copy fails, like save_image.
+        """
+        plot = plot if plot is not None else self._current_plot()
+        if not self._plot_has_content(plot):
+            raise CestError("nothing is plotted on this tab yet")
+        try:
+            plot.clear_crosshair(redraw=False)
+            copy_figure_to_clipboard(plot.figure, dpi=dpi, clipboard=clipboard)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise CestError(f"could not copy the image: {exc}") from exc
+
+    def _copy_image(self, plot=None) -> None:
+        """Menu handler: copy, and say so if it could not be done."""
+        try:
+            self.copy_image(plot)
+        except CestError as exc:
+            QMessageBox.warning(self, "CEST", str(exc))
+
     def _save_image(self, plot=None) -> None:            # pragma: no cover
         plot = plot if plot is not None else self._current_plot()
         if not self._plot_has_content(plot):
@@ -2132,6 +2154,8 @@ class CestPanel(QWidget):
         has_content = self._plot_has_content(plot)
         save = menu.addAction("Save image\u2026", lambda: self._save_image(plot))
         save.setEnabled(has_content)
+        copy = menu.addAction("Copy image", lambda: self._copy_image(plot))
+        copy.setEnabled(has_content)
         if plot is self._z_plot:
             menu.addSeparator()
             full = menu.addAction("Full range", self._reset_z_limits)

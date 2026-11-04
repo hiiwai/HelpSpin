@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.9.12 - 2026-11-04
+
+### Fixed: clicking the plot changed the x range
+
+Reported on 0.9.11: after applying a ppm range, a click on the 1D plot gave a
+nonsense range instead of keeping the one applied. Three faults combined:
+
+- **The range boxes showed the PREVIOUS range after Apply.** Recording the
+  undo step (which happens before the change) refreshed the boxes from the
+  plot, so whenever Apply opened a new undo step the plot showed the new
+  range and the boxes the old one. The boxes are now refreshed only after a
+  change -- by Apply itself, a zoom on the plot, or undo/redo.
+- **Leaving a box applied it.** The boxes applied on every loss of focus,
+  so clicking the plot applied whatever they held: the stale pair above, or
+  half-typed numbers. Moving from Left to Right applied a mixed pair. Now
+  only **Enter** or **Apply** applies; moving between the boxes applies
+  nothing; leaving them for the plot or anything else in the window puts
+  back the range on the plot. Switching to another window keeps the typing.
+- **A click in X zoom was a box zoom.** A press and release counted as a
+  click only if both landed on exactly the same data point, so the pixel or
+  two a trackpad click moves zoomed into a 0.02 ppm sliver. A drag now has
+  to move 5 screen pixels (scaled on Retina/HiDPI displays). The same rule
+  stops a click from nudging the selected spectrum.
+
+Also fixed in the box zoom: it is now one undo step; a purely horizontal
+drag zooms (it was ignored); releasing past the frame zooms to the edge
+(it was cancelled); an X box zoom keeps an explicit Y zoom (it threw it
+away); in stacked mode the box never crops the lanes. Dragging a spectrum is
+now one undo step. Opening a session shows the session's own range in the
+boxes, not the full data range.
+
+### Added: Copy image
+
+Right-click → **Copy image** on the main canvas and both CEST plots, and
+**Edit → Copy Image** (Ctrl+Shift+C / Cmd+Shift+C), put the figure on the
+clipboard to paste into PowerPoint, Keynote, Word and the like -- the same
+picture as Save image (300 dpi, white, no crosshair). A failed save or copy
+now says so in the status bar; a failed save used to read "Could not load".
+
+### Fixed: unreadable ON buttons in the toolbar (macOS, light mode)
+
+Dock Explorer, Stacked and Labels, when on, showed white text on a pale grey
+bezel. Qt's macOS style paints an ON text-only toolbar label in the menu
+highlight colour (white), which only suits the dark bezel of dark mode. The
+label is now drawn in the normal text colour; the bezel, button sizes and
+everything else stay native. macOS only -- Windows already drew these
+correctly and is unchanged. Never addressed before: this is not a dark-mode
+fix that missed light mode.
+
+1334 tests (up from 1261); full suite green.
+
 ## 0.9.10 - 2026-10-29
 
 ### Fixed: pinned markers were invisible in 2D mode

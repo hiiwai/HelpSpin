@@ -28,7 +28,7 @@ from PySide6.QtWidgets import QFileDialog, QMenu, QVBoxLayout, QWidget
 
 from ..domain.project import DEFAULT_PALETTE as PALETTE
 from .dataset_model import MIME_DATASET
-from .figure_export import EXPORT_FILTERS, save_figure
+from .figure_export import EXPORT_FILTERS, copy_figure_to_clipboard, save_figure
 
 # Okabe-Ito is already the domain palette; reuse it so on-screen colours match
 # whatever an eventual export produces.
@@ -47,6 +47,14 @@ _FALLBACK_PALETTE = [
 # autoscale and made strong/weak pairs impossible to compare.
 MIN_Y_SCALE = 1e-9
 MAX_Y_SCALE = 1e9
+
+# How far the pointer must travel, in logical screen pixels, before a press on
+# the plot counts as a DRAG (a zoom box, or moving the selected spectrum)
+# rather than a click. Measured in pixels, never in data units: a trackpad
+# click moves a pixel or two, which in ppm is any size at all. The old guard
+# was 1e-9 ppm, so an ordinary click in X zoom zoomed into a 0.02 ppm sliver
+# -- the reported "click on the canvas gives a nonsense x range".
+CLICK_SLOP_PIXELS = 5
 
 LINE_STYLES = {
     "Solid": "-",
@@ -323,6 +331,11 @@ class SpectrumCanvas(QWidget):
     tracesChanged = Signal()
     cursorMoved = Signal(float, float)    # ppm, intensity under the cursor
     imageSaved = Signal(str)              # path written
+    imageCopied = Signal()                # figure put on the clipboard
+    # A save or copy that failed, as a sentence for the status bar. Not
+    # loadFailed: that one names a DATASET -- it said "Could not load" for
+    # an image file, and greyed out a browser row for it.
+    exportFailed = Signal(str)
     modeChanged = Signal(str)             # '1D' or '2D'
     dimensionalityRefused = Signal(str)   # message
     viewChanged = Signal()                # ranges changed from the plot
@@ -380,7 +393,8 @@ class SpectrumCanvas(QWidget):
         # reported fault. A stack is a fixed grid of lanes; zooming it means
         # making the traces taller in their lanes, not moving the lanes.
         self._stack_gain: float = 1.0
-        self._zoom_band = None      # (x0, y0, Rectangle) while dragging
+        # (axes, x0, y0, Rectangle) while a zoom box is being dragged.
+        self._zoom_band = None
         self._opacity = 1.0
         # Digits after the point in the cursor readouts. Two is enough to
         # place a peak and keeps the numbers short; four filled the status
@@ -426,6 +440,9 @@ class SpectrumCanvas(QWidget):
         # press that opens it.
         self._context_point: tuple[float, float] | None = None
         self._drag_start = None
+        # False until the pointer has moved past CLICK_SLOP_PIXELS, so a
+        # plain click on the plot never nudges the selected spectrum.
+        self._drag_moved = False
         self._label_artists = []
         self._label_drag = None
         self._pending_meta = {}
@@ -1075,69 +1092,145 @@ class SpectrumCanvas(QWidget):
             return (None, None)
         return (float(low), float(high))
 
+    def _click_slop(self) -> float:
+        """CLICK_SLOP_PIXELS in matplotlib's display units.
+
+        matplotlib's display coordinates are physical pixels: on a Retina or
+        a scaled Windows display there are two (or 1.5) per logical pixel, and
+        an unscaled threshold would be half as far on screen there.
+        """
+        try:
+            ratio = float(getattr(self._canvas, "device_pixel_ratio", 1.0))
+        except (TypeError, ValueError):   # pragma: no cover - defensive
+            ratio = 1.0
+        if not math.isfinite(ratio) or ratio <= 0:
+            ratio = 1.0
+        return CLICK_SLOP_PIXELS * ratio
+
+    def _pixel_distance(self, axes, a, b):
+        """|dx|, |dy| in display pixels between two DATA points on ``axes``."""
+        (x0, y0), (x1, y1) = axes.transData.transform([a, b])
+        return abs(float(x1) - float(x0)), abs(float(y1) - float(y0))
+
     def _begin_zoom_band(self, event) -> bool:
-        if event.xdata is None or event.ydata is None:
+        axes = event.inaxes
+        if axes is None or event.xdata is None or event.ydata is None:
             return False
+        # A box already open means its release was never seen (released over
+        # another window, say). Drop it rather than orphan its rectangle.
+        self._cancel_zoom_band()
         rect = Rectangle(
             (float(event.xdata), float(event.ydata)), 0, 0,
             fill=False, edgecolor="#555555", linestyle="--", linewidth=0.8,
         )
-        event.inaxes.add_patch(rect)
-        self._zoom_band = (float(event.xdata), float(event.ydata), rect)
+        axes.add_patch(rect)
+        self._zoom_band = (axes, float(event.xdata), float(event.ydata), rect)
         return True
 
+    def _band_point(self, event):
+        """The pointer in the zoom box's OWN data coordinates, kept inside its
+        frame -- or None if there is no usable position.
+
+        Computed from the pixel position rather than event.xdata: outside the
+        frame xdata is None (the old code then cancelled the zoom, so dragging
+        past the edge to zoom up to the edge did nothing), and over another
+        2D panel it is in that panel's coordinates.
+        """
+        if self._zoom_band is None:
+            return None
+        axes = self._zoom_band[0]
+        x_pix, y_pix = getattr(event, "x", None), getattr(event, "y", None)
+        if x_pix is None or y_pix is None:
+            return None
+        try:
+            x, y = axes.transData.inverted().transform(
+                (float(x_pix), float(y_pix))
+            )
+        except (TypeError, ValueError):   # pragma: no cover - defensive
+            return None
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return None
+        x_low, x_high = sorted(axes.get_xlim())
+        y_low, y_high = sorted(axes.get_ylim())
+        return (min(max(float(x), x_low), x_high),
+                min(max(float(y), y_low), y_high))
+
     def _update_zoom_band(self, event) -> None:
-        if self._zoom_band is None or event.xdata is None or event.ydata is None:
+        point = self._band_point(event)
+        if point is None:
             return
-        x0, y0, rect = self._zoom_band
-        rect.set_bounds(
-            min(x0, float(event.xdata)), min(y0, float(event.ydata)),
-            abs(float(event.xdata) - x0), abs(float(event.ydata) - y0),
-        )
+        _axes, x0, y0, rect = self._zoom_band
+        x1, y1 = point
+        rect.set_bounds(min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
         self._canvas.draw_idle()
 
     def _cancel_zoom_band(self) -> None:
         if self._zoom_band is None:
             return
-        _, _, rect = self._zoom_band
+        rect = self._zoom_band[3]
         try:
             rect.remove()
-        except (ValueError, NotImplementedError):   # pragma: no cover
+        except (ValueError, NotImplementedError):   # already gone in a redraw
             pass
         self._zoom_band = None
         self._canvas.draw_idle()
 
     def _finish_zoom_band(self, event) -> None:
-        """Apply the dragged box. A tiny drag is treated as a click.
+        """Apply the dragged box. A click is never a zoom.
 
-        Without a minimum size, the smallest tremor while clicking would zoom
-        to a few points of noise and there would be no obvious way back.
+        Each axis of the box is applied only if the pointer travelled at
+        least CLICK_SLOP_PIXELS along it on screen. Both short: it was a
+        click, and the view is left exactly as it was -- the range last
+        applied stays. One short: a flat or thin box zooms the other axis
+        only, instead of the old all-or-nothing rule that ignored a purely
+        horizontal drag and accepted any 1-pixel tremor.
         """
         if self._zoom_band is None:
             return
-        x0, y0, _ = self._zoom_band
+        axes, x0, y0, _rect = self._zoom_band
+        end = self._band_point(event)
         self._cancel_zoom_band()
-        if event.xdata is None or event.ydata is None:
+        # The axes can have been replaced by a redraw during the drag (a
+        # spectrum finishing loading, a 2D re-layout); its limits are then
+        # stale and a box measured against them would be meaningless.
+        if end is None or axes not in self._figure.axes:
             return
-        x1, y1 = float(event.xdata), float(event.ydata)
-        if abs(x1 - x0) < 1e-9 or abs(y1 - y0) < 1e-12:
+        x1, y1 = end
+        dx, dy = self._pixel_distance(axes, (x0, y0), (x1, y1))
+        slop = self._click_slop()
+        wide, tall = dx >= slop, dy >= slop
+        if not (wide or tall):
             return
 
         high_x, low_x = max(x0, x1), min(x0, x1)
+        low_y, high_y = min(y0, y1), max(y0, y1)
         if self.mode() == "2D":
-            self._f2_range = (high_x, low_x)
-            self._f1_range = (max(y0, y1), min(y0, y1))
+            # F1 (vertical) and F2 (horizontal) are both chemical shifts.
+            self.push_undo()
+            if wide:
+                self._f2_range = (high_x, low_x)
+            if tall:
+                self._f1_range = (high_y, low_y)
         else:
-            self._ppm_range = (high_x, low_x)
-            if self._y_zoom_mode:
-                # With Y zoom on, a dragged box means the box: taking its
-                # width but refitting its height would ignore half of a
-                # gesture the user made deliberately.
-                low_y, high_y = min(y0, y1), max(y0, y1)
-                if high_y > low_y:
-                    self._y_range = (low_y, high_y)
-            else:
-                self._y_range = None
+            stacked = self._arrangement == self.ARRANGEMENT_STACKED
+            # Only the HEIGHT of the box can be used with Y zoom on, and only
+            # in overlay: in stacked mode an explicit vertical window crops
+            # the fixed lanes and whole spectra vanish (HANDOFF 4.r).
+            use_height = tall and self._y_zoom_mode and not stacked
+            if not (wide or use_height):
+                return
+            self.push_undo()
+            if wide:
+                self._ppm_range = (high_x, low_x)
+            if use_height:
+                # With Y zoom on, a dragged box means the box.
+                self._y_range = (low_y, high_y)
+            elif wide and self._y_range is None:
+                # A new horizontal window re-frames the AUTOMATIC vertical
+                # frame -- but never an explicit Y zoom, which only Fit Y,
+                # reset_y_zoom and Clear may discard (HANDOFF 4.s). The old
+                # code set _y_range = None here, so an X box zoom silently
+                # threw a Y zoom away.
                 self._y_limits = None
                 self._stack_step = None
         self._redraw()
@@ -2147,6 +2240,7 @@ class SpectrumCanvas(QWidget):
         """
         menu = QMenu(self)
         menu.addAction("Save image\u2026", self.request_save_image)
+        menu.addAction("Copy image", self.copy_image)
         menu.addSeparator()
         menu.addAction("Auto scale Y", self.autoscale_traces)
         menu.addAction("Fit Y to data", self.fit_to_drawn)
@@ -2328,7 +2422,7 @@ class SpectrumCanvas(QWidget):
         try:
             self.save_image(path)
         except Exception as exc:  # noqa: BLE001 -- report, never crash
-            self.loadFailed.emit(path, f"could not save: {exc}")
+            self.exportFailed.emit(f"Could not save {path}: {exc}")
             return
         self.imageSaved.emit(path)
 
@@ -2348,6 +2442,25 @@ class SpectrumCanvas(QWidget):
         # bakes a stray cursor line into every exported image.
         self._clear_crosshair()
         save_figure(self._figure, path, transparent=transparent, dpi=dpi)
+
+    def copy_image(self, dpi: int = 300, clipboard=None) -> bool:
+        """Put the figure on the clipboard, to paste into another application.
+
+        The same picture Save image writes (white background, on-screen size
+        and limits, 300 dpi), without the crosshair. Returns False -- and
+        leaves the clipboard alone -- when nothing is loaded; a failure is
+        reported through exportFailed, never raised.
+        """
+        if not self._traces:
+            return False
+        self._clear_crosshair()
+        try:
+            copy_figure_to_clipboard(self._figure, dpi=dpi, clipboard=clipboard)
+        except Exception as exc:  # noqa: BLE001 -- report, never crash
+            self.exportFailed.emit(f"Could not copy the image: {exc}")
+            return False
+        self.imageCopied.emit()
+        return True
 
     def _save_pptx(self, path: str, dpi: int = 300) -> None:
         from .figure_export import _save_pptx
@@ -3146,9 +3259,10 @@ class SpectrumCanvas(QWidget):
             return
 
         trace = self.selected_trace()
-        if trace is None or event.ydata is None:
+        if trace is None or event.xdata is None or event.ydata is None:
             return
-        self._drag_start = (float(event.ydata), trace.y_offset)
+        self._drag_start = (float(event.xdata), float(event.ydata), trace.y_offset)
+        self._drag_moved = False
 
     def _label_at(self, event):
         """The spectrum name under the cursor, if any."""
@@ -3175,12 +3289,26 @@ class SpectrumCanvas(QWidget):
         self._redraw()
 
     def _continue_drag(self, event) -> None:
-        if event.ydata is None:
+        if event.xdata is None or event.ydata is None:
             return
-        start_y, start_offset = self._drag_start
+        start_x, start_y, start_offset = self._drag_start
         index = self._selected_index
-        if index is None:
+        if index is None or not (0 <= index < len(self._traces)):
             return
+        if not self._drag_moved:
+            # A click is not a drag: until the pointer has really moved, the
+            # spectrum stays put, so clicking the plot never nudges it.
+            dx, dy = self._pixel_distance(
+                self._axes, (start_x, start_y),
+                (float(event.xdata), float(event.ydata)),
+            )
+            if max(dx, dy) < self._click_slop():
+                return
+            # One undo step for the whole drag, taken before the first move.
+            self.push_undo()
+            self._drag_moved = True
+        # Measured from the PRESS point, so crossing the threshold does not
+        # leave the spectrum lagging the pointer by the slop distance.
         self._traces[index].y_offset = start_offset + (float(event.ydata) - start_y)
         self._redraw()
 
@@ -3193,8 +3321,11 @@ class SpectrumCanvas(QWidget):
             self.tracesChanged.emit()
             return
         if self._drag_start is not None:
+            moved = self._drag_moved
             self._drag_start = None
-            self.tracesChanged.emit()
+            self._drag_moved = False
+            if moved:
+                self.tracesChanged.emit()
 
     def _on_mouse_leave(self, event) -> None:
         self._clear_crosshair()

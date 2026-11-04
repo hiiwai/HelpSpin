@@ -33,7 +33,9 @@ from PySide6.QtGui import QAction, QFont, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
+    QProxyStyle,
     QStyle,
+    QStyleOptionToolButton,
     QToolBar,
     QToolButton,
     QWidget,
@@ -331,3 +333,105 @@ class ToolbarFitter(QObject):
 def extension_button(toolbar: QToolBar) -> QWidget | None:
     """The toolbar's "»" overflow button (Qt's own object name)."""
     return toolbar.findChild(QToolButton, "qt_toolbar_ext_button")
+
+
+# -- readable checked buttons on macOS -----------------------------------------
+#
+# The macOS style draws a toolbar button that is ON (Dock Explorer, Stacked,
+# Labels...) on a translucent black bezel and, for a text-only button, paints
+# its label in the MENU palette's HighlightedText -- white. On the dark bezel
+# of dark mode that reads fine; in light mode the bezel is black at ~11%, a
+# pale grey, and the label is white on pale grey: unreadable. The same holds
+# while any button is pressed. (Qt's qmacstyle_mac.mm, CE_ToolButtonLabel:
+# "if (down && tbstyle == Qt::ToolButtonTextOnly) ... HighlightedText";
+# unchanged from Qt 6.6 to dev.) It is the style's own choice of colour, so
+# no palette or font setting reaches it.
+#
+# The fix keeps the native bezel and only redraws the LABEL as if the button
+# were not down: normal button text colour and the normal etched shadow. It is
+# applied per button of the main toolbar, never application-wide, and only on
+# the macOS style -- Windows styles draw checked labels in the normal text
+# colour already, and are left exactly as they are.
+
+_DOWN = QStyle.StateFlag.State_On | QStyle.StateFlag.State_Sunken
+EXTENSION_BUTTON_NAME = "qt_toolbar_ext_button"
+
+
+def is_macos_style(style: QStyle | None) -> bool:
+    """True for Qt's native macOS style (QStyle.name() is "macos")."""
+    if style is None:
+        return False
+    return style.name().lower() in ("macos", "macintosh")
+
+
+class CheckedLabelStyle(QProxyStyle):
+    """Draw an ON or pressed tool button's label like an OFF one.
+
+    Only CE_ToolButtonLabel is touched, so the bezel that shows the button
+    is on, the button sizes and every other control are the base style's.
+    """
+
+    def drawControl(self, element, option, painter, widget=None):  # noqa: N802
+        if (element == QStyle.ControlElement.CE_ToolButtonLabel
+                and isinstance(option, QStyleOptionToolButton)
+                and option.state & _DOWN):
+            option = QStyleOptionToolButton(option)   # never edit the caller's
+            option.state = option.state & ~_DOWN
+        super().drawControl(element, option, painter, widget)
+
+
+class CheckedLabelFix(QObject):
+    """Gives every text button of `toolbar` a CheckedLabelStyle.
+
+    `enabled=None` means "only on the macOS style". Buttons added to the
+    toolbar later are styled too. Parent it to the main window AFTER the
+    toolbar exists: children are destroyed in creation order, so the style
+    then outlives every button that uses it.
+    """
+
+    def __init__(self, toolbar: QToolBar, parent: QObject | None = None,
+                 enabled: bool | None = None) -> None:
+        super().__init__(parent if parent is not None else toolbar)
+        self._toolbar = toolbar
+        base = QApplication.style()
+        self._enabled = is_macos_style(base) if enabled is None else bool(enabled)
+        self._style: CheckedLabelStyle | None = None
+        if self._enabled:
+            # A NEW base instance by name. Passing QApplication.style() itself
+            # would hand the application's style to the proxy: the proxy takes
+            # ownership and becomes the proxy of EVERY widget's style.
+            self._style = CheckedLabelStyle(base.name())
+            self._style.setParent(self)
+            self._timer = QTimer(self)
+            self._timer.setSingleShot(True)
+            self._timer.setInterval(0)
+            self._timer.timeout.connect(self.apply)
+            toolbar.installEventFilter(self)
+            self.apply()
+
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def proxy_style(self) -> CheckedLabelStyle | None:
+        return self._style
+
+    def apply(self) -> int:
+        """Style any button not yet styled; return how many were changed."""
+        if self._style is None:
+            return 0
+        changed = 0
+        for button in self._toolbar.findChildren(QToolButton):
+            if button.objectName() == EXTENSION_BUTTON_NAME:
+                continue   # the "\u00bb" overflow: an arrow, never checked
+            if button.style() is not self._style:
+                button.setStyle(self._style)
+                changed += 1
+        return changed
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt API)
+        # The button for a new action is created AFTER this filter sees
+        # ActionAdded, so styling is deferred to the event loop.
+        if obj is self._toolbar and event.type() == QEvent.Type.ActionAdded:
+            self._timer.start()
+        return False
+

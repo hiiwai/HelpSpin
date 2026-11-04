@@ -64,7 +64,7 @@ from .ui.browser import DatasetBrowser
 from .ui.preferences_dialog import PreferencesDialog
 from .ui.spectrum_canvas import SpectrumCanvas
 from .ui.spectrum_list_panel import SpectrumListPanel
-from .ui.toolbar_layout import ToolbarFitter, build_quit_toolbar
+from .ui.toolbar_layout import CheckedLabelFix, ToolbarFitter, build_quit_toolbar
 
 APP_TITLE = "HelSpin"
 
@@ -189,6 +189,14 @@ class MainWindow(QMainWindow):
         )
         self._canvas.imageSaved.connect(
             lambda p: self.statusBar().showMessage(f"Saved {p}", 6000)
+        )
+        self._canvas.imageCopied.connect(
+            lambda: self.statusBar().showMessage(
+                "Image copied \u2014 paste it into another application", 6000
+            )
+        )
+        self._canvas.exportFailed.connect(
+            lambda message: self.statusBar().showMessage(message, 15000)
         )
         self._canvas.spectrumAdded.connect(self._on_spectrum_added)
         self._canvas.tracesChanged.connect(self._sync_spectrum_list)
@@ -325,6 +333,11 @@ class MainWindow(QMainWindow):
         self._toolbar_fitter = ToolbarFitter(self, toolbar, quit_bar, quit_button)
         self._toolbar_fitter.restyle_quit()
         self._toolbar_fitter.refit()
+        # macOS light mode draws an ON button's label white on pale grey
+        # (Dock Explorer, Stacked, Labels); this keeps it readable. No-op on
+        # other styles. Parented to the window after the toolbar exists, so
+        # its style outlives every button using it.
+        self._checked_label_fix = CheckedLabelFix(toolbar, parent=self)
 
     def _build_menu(self) -> None:
         """A conventional menu bar as well as the toolbar -- both are cheap
@@ -360,6 +373,17 @@ class MainWindow(QMainWindow):
         )
         self._canvas.historyChanged.connect(self._sync_history_actions)
         self._sync_history_actions()
+        edit_menu.addSeparator()
+        # Not plain Ctrl+C: that belongs to whatever text field has focus
+        # (the ppm boxes, the explorer filter), and taking it over would make
+        # copying a number copy the plot instead. Ctrl is Cmd on macOS.
+        self._copy_image_action = edit_menu.addAction(
+            "&Copy Image", self._copy_image
+        )
+        self._copy_image_action.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        self._copy_image_action.setToolTip(
+            "Copy the plot to the clipboard, to paste into another application"
+        )
 
         help_menu = self.menuBar().addMenu("&Help")
         help_menu.addAction("&Licence…", self._show_licence)
@@ -519,9 +543,9 @@ class MainWindow(QMainWindow):
             return
         self._sync_spectrum_list()
         self._adjustment_bar.set_mode(self._canvas.mode())
-        bounds = self._canvas.ppm_bounds()
-        if bounds:
-            self._adjustment_bar.set_range(*bounds)
+        # The session's OWN range, not the full data bounds: the boxes must
+        # show what the plot shows, or the next Apply jumps the view.
+        self._sync_ranges_from_canvas()
         if failed:
             # Say which spectra are missing rather than quietly restoring a
             # partial view that looks complete.
@@ -532,6 +556,14 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Session restored ({len(self._canvas.traces)} spectra)", 6000
         )
+
+    def _copy_image(self) -> None:
+        """Edit > Copy Image. Says so when there is nothing to copy, rather
+        than putting an empty frame on the clipboard."""
+        if not self._canvas.traces:
+            self.statusBar().showMessage("Nothing to copy: the plot is empty.", 4000)
+            return
+        self._canvas.copy_image()
 
     def _undo(self) -> None:
         if not self._canvas.undo():
@@ -546,7 +578,14 @@ class MainWindow(QMainWindow):
         the menu says what is possible rather than offering a no-op."""
         self._undo_action.setEnabled(self._canvas.can_undo())
         self._redo_action.setEnabled(self._canvas.can_redo())
-        self._sync_ranges_from_canvas()
+        # The range boxes are NOT synced from here any more. historyChanged
+        # fires from push_undo, which runs BEFORE the change it records, so
+        # syncing here wrote the PREVIOUS range into the boxes on every Apply
+        # that opened a new undo step: the plot showed the new range, the
+        # boxes the old one, and the next click on the plot (which applied
+        # the boxes on focus loss) jumped back to it -- the reported
+        # "nonsense x range". Undo and redo emit viewChanged after restoring,
+        # which is what keeps the boxes right for them.
 
     def _sync_ranges_from_canvas(self) -> None:
         """Push the canvas's current ranges into the range boxes."""

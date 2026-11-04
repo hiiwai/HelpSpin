@@ -318,7 +318,7 @@ MARKER_ENTRIES = ["Add vertical marker here", "Add horizontal marker here",
 
 def test_nutation_menu_offers_save_and_markers(panel, tmp_path):
     menu = _actions(panel.build_plot_menu(panel._n_plot))
-    assert list(menu) == ["Save image\u2026", *MARKER_ENTRIES]
+    assert list(menu) == ["Save image\u2026", "Copy image", *MARKER_ENTRIES]
     assert not any(a.isEnabled() for a in menu.values())
 
 

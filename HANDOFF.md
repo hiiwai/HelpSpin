@@ -25,7 +25,7 @@ conda create -n helspin python=3.11 && conda activate helspin
 pip install -e ".[dev]"
 helspin              # launch
 helspin --version    # prints version, needs no display
-pytest               # 734 tests
+pytest               # 1334 tests
 ```
 
 **Version discipline:** `pyproject.toml` is the single source of truth.
@@ -747,4 +747,33 @@ A bundle has no package metadata; `helspin/__init__.py` falls back to a
 `VERSION` file beside it, which the specs generate from pyproject
 (`packaging/spec_support.py`) together with the Windows version resource.
 Both live under `build/`, never in the repository.
+
+## Range boxes, clicks and the plot (0.9.12)
+
+- **Never refresh the range boxes on `historyChanged`.** `push_undo` runs
+  BEFORE the change it records, so the boxes got the previous range on every
+  Apply that opened an undo step. Refresh on `viewChanged` (zooms, undo,
+  redo) and from the code that changed the range.
+- **The boxes apply on Enter (`returnPressed`) and Apply only.** Qt emits
+  `editingFinished` on focus loss too; applying there applied stale or
+  half-typed numbers whenever the plot was clicked. On focus loss the bar
+  reverts to `_shown` only when focus went elsewhere in the SAME window and
+  outside the bar: Apply takes focus before its click on Windows, and a
+  revert there would make Apply apply the old range.
+- **Click vs drag is measured in screen pixels** (`CLICK_SLOP_PIXELS`,
+  scaled by the device pixel ratio), never in data units, for both the zoom
+  box and dragging a spectrum.
+- **The box zoom must respect 4.r and 4.s**: no `_y_range` in stacked mode,
+  and never clear an explicit `_y_range` on an X zoom.
+
+## ON toolbar buttons on macOS (0.9.12)
+
+QMacStyle draws a down/ON text-only toolbar label with
+`QApplication.palette("QMenu")` HighlightedText -- white -- whatever the
+widget palette says, so no palette or font fix reaches it. `CheckedLabelFix`
+gives each main-toolbar button a `CheckedLabelStyle` proxy that draws the
+label with State_On/State_Sunken cleared; the bezel still shows the state.
+Rules: macOS style only; build the proxy from the style NAME (passing
+`QApplication.style()` transfers ownership and re-routes every widget's
+style); parent it to the window after the toolbar so it outlives the buttons.
 

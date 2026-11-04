@@ -1,6 +1,6 @@
 # HelSpin — User Manual
 
-Version 0.9.8
+Version 0.9.12
 
 Compare Bruker NMR spectra and build publication figures.
 
@@ -126,7 +126,9 @@ spectrum you meant would be worse than asking you to click one.
 ### Y offset
 
 Moves the selected spectrum up or down. Pure translation — it does not rescale
-anything and does not re-fit the view.
+anything and does not re-fit the view. You can also drag the selected spectrum
+on the plot; a plain click (without moving a few pixels) never moves it, and
+a drag is one step for Edit → Undo.
 
 **To bottom** drops the selected spectrum to the baseline; **Bottom all** does
 every spectrum at once.
@@ -178,6 +180,11 @@ Zooming keeps the point under the cursor fixed, so a peak of interest does not
 walk off the edge.
 
 With **X zoom** on, you can also drag a box on the plot to zoom into it.
+A click is never a zoom: the pointer has to move a few pixels first, so
+clicking the plot keeps the range you have. Dragging past the frame zooms up
+to the edge. A box zoom is one step for Edit → Undo. With **Y zoom** also on,
+the box sets the vertical range too (overlay only — in a stack the box sets
+the ppm range and leaves the lanes alone).
 
 ### Y zoom in stacked mode is different, on purpose
 
@@ -211,7 +218,12 @@ Fit Y, Full, reset or undo clear it.
 ## 7. Setting the ppm window
 
 The bottom bar takes a typed range. ppm axes descend, so the **left** box is
-the higher value. **Apply** sets it; **Full** clears it.
+the higher value. **Enter** or **Apply** sets it; **Full** clears it.
+
+Moving between the two boxes applies nothing, so you can type both before
+applying. If you click the plot (or anything else in the window) without
+applying, the boxes go back to the range on the plot — the plot keeps the
+range you last applied.
 
 Recently used ranges are remembered **between runs**, so returning to a window
 you use often is one click. The list starts seeded with three common windows
@@ -260,6 +272,11 @@ the state that preceded it.
 ---
 
 ## 10. Exporting a figure
+
+Right-click the canvas → **Copy image** puts the figure on the clipboard, to
+paste straight into PowerPoint, Keynote, Word, a mail or a chat. Also
+**Edit → Copy Image** (Ctrl+Shift+C; on a Mac Cmd+Shift+C). It is the same
+picture as a saved PNG: 300 dpi, white background, no cursor crosshair.
 
 Right-click the canvas → **Save image…**. Formats: PNG, JPEG, TIFF, SVG,
 PDF, EPS, PostScript and PowerPoint (one slide). The format follows the
@@ -539,6 +556,7 @@ The menu matches the main canvas:
 - **Save image…** — same formats and writer as the main canvas (PNG, JPEG,
   TIFF, SVG, PDF, EPS, PS, PowerPoint; 300 dpi raster), exactly as zoomed.
   Also the **Save image…** button in the header, Ctrl+S / Cmd+S.
+- **Copy image** — the same picture on the clipboard, to paste elsewhere.
 - **Full range** (Z-spectrum) — back to the whole data range.
 - **Add vertical / horizontal marker here**, **Remove nearest marker**,
   **Clear all markers** — pinned in data units and labelled with their value

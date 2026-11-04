@@ -1,12 +1,14 @@
-"""Writing a matplotlib figure to disk, shared by every canvas.
+"""Writing a matplotlib figure to disk or the clipboard, shared by every canvas.
 
 The main spectrum canvas and the CEST plots offer the same "Save image"
-formats and must produce the same kind of file: one implementation, so a fix
-in one place (a format, editable text in vector output) reaches both.
+formats and "Copy image" and must produce the same kind of output: one
+implementation, so a fix in one place (a format, editable text in vector
+output) reaches both.
 """
 
 from __future__ import annotations
 
+import io
 import tempfile
 from pathlib import Path
 
@@ -77,3 +79,49 @@ def _save_pptx(figure, path: str, dpi: int = 300) -> None:
         slide.shapes.add_picture(png, 0, 0, width=Inches(float(width_in)),
                                  height=Inches(float(height_in)))
         prs.save(path)
+
+
+def figure_png_bytes(figure, *, dpi: int = 300) -> bytes:
+    """The figure as PNG bytes: white background, on-screen size and limits.
+
+    The same rendering as a saved PNG -- no tight bounding box, no layout
+    change -- so a pasted image matches both the canvas and a saved file.
+    """
+    buffer = io.BytesIO()
+    figure.savefig(buffer, format="png", dpi=dpi, facecolor="white",
+                   edgecolor="none")
+    return buffer.getvalue()
+
+
+def copy_figure_to_clipboard(figure, *, dpi: int = 300, clipboard=None):
+    """Put the figure on the system clipboard as an image; return the QImage.
+
+    For pasting straight into PowerPoint, Keynote, Word, Illustrator, a mail
+    or a chat. Copied as a bitmap through QClipboard.setImage, which Qt
+    offers in each platform's native image formats (TIFF/PNG on macOS,
+    DIB on Windows) -- what other applications actually accept on paste.
+    Opaque white rather than transparent: Windows' DIB clipboard formats have
+    no reliable alpha, so a transparent background pastes as black there.
+
+    The resolution matches Save image (300 dpi by default) and is recorded
+    in the image, so applications that honour it paste the figure at its
+    on-screen physical size.
+
+    Raises RuntimeError if the image cannot be produced or no clipboard is
+    available, so callers can report it rather than fail silently.
+    """
+    from PySide6.QtGui import QGuiApplication, QImage
+
+    image = QImage.fromData(figure_png_bytes(figure, dpi=dpi), "PNG")
+    if image.isNull():
+        raise RuntimeError("the figure could not be rendered as an image")
+    # Set explicitly rather than trusting the PNG's pHYs chunk to be read.
+    dots_per_metre = round(float(dpi) / 0.0254)
+    image.setDotsPerMeterX(dots_per_metre)
+    image.setDotsPerMeterY(dots_per_metre)
+    if clipboard is None:
+        clipboard = QGuiApplication.clipboard()
+    if clipboard is None:
+        raise RuntimeError("no clipboard is available")
+    clipboard.setImage(image)
+    return image
