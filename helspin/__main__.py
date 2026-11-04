@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -458,6 +459,18 @@ class MainWindow(QMainWindow):
         )
         if not directory:
             return
+        # The same folder twice shares one index but gets two copies of all
+        # the background work, and two identical-looking trees. Compared as
+        # normalised strings: resolving would touch the share on the GUI
+        # thread just to answer this.
+        wanted = os.path.normcase(os.path.normpath(directory))
+        for existing in self._browser.data_roots():
+            if os.path.normcase(os.path.normpath(str(existing.path))) == wanted:
+                self.statusBar().showMessage(
+                    f"That folder is already a data root ('{existing.name}').",
+                    8000,
+                )
+                return
         name, ok = QInputDialog.getText(
             self, "Name this data root", "Display name (e.g. '600 MHz'):"
         )

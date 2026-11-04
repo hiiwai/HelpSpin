@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.9.15 - 2026-11-04
+
+### Fixed: data roots added earlier stayed slow to browse
+
+Reported: browsing was slow on data roots added in earlier sessions, and
+removing a root and adding it back made it fast. The background indexer --
+which reads every sample's experiment list and metadata once and caches it,
+so later sessions need no network access to open a sample -- worked on ONE
+root at a time, and each root that started replaced the previous root's
+queue. At start-up all configured roots start together, so every root but
+the last lost its indexing, every session: those roots never became fully
+cached, each launch redid part of the work, and opening a sample there meant
+listing it over the share again. Re-adding a root made it the last one,
+which is why that helped.
+
+Every root now keeps its own work in one shared queue until it is done.
+Measured on a simulated share (4 roots, 4 ms per file operation): before,
+after a full first session only one root was fully indexed (others 0-30%),
+and each later session still did ~1100-1500 file operations; now all roots
+are complete after the first session, and a later session does one quick
+check per sample (160 operations) and opens any sample with no file access.
+
+Also fixed:
+
+- Removing one data root cancelled every other root's indexing; it now
+  stops only that root's.
+- Each cache save kept a full copy of the root's index in memory for the
+  rest of the session (one per save, every few seconds while indexing) --
+  megabytes per save on a large share. Saves are now released when written.
+- The background progress counts all roots together and clears when done.
+- Adding a folder that is already a data root is refused with a message
+  (two entries for one folder doubled the background work).
+
+1359 tests (up from 1350).
+
 ## 0.9.14 - 2026-11-04
 
 No change to the application (same as 0.9.12 and 0.9.13).

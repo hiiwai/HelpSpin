@@ -1475,6 +1475,10 @@ class _StaleTask(QRunnable):
         self.signals.done.emit(self, self.root_node, changed)
 
 
+class _SaveSignals(QObject):
+    done = Signal(object)                 # task
+
+
 class _SaveTask(QRunnable):
     """Writes one root's index cache. Pure file I/O over a plain dict, so it
     shares nothing mutable with the GUI thread."""
@@ -1491,9 +1495,19 @@ class _SaveTask(QRunnable):
         self.setAutoDelete(False)
         self._root = root
         self._payload = payload
+        self.signals = _SaveSignals()
 
     def run(self) -> None:
-        index_store.save_payload(self._root, self._payload)
+        try:
+            index_store.save_payload(self._root, self._payload)
+        finally:
+            # The payload is the WHOLE index of a root -- megabytes on a big
+            # share. Let it go the moment it is written, and report back so
+            # the populator can drop the task: it used to stay in _inflight
+            # for the rest of the session, one full copy of the index per
+            # save, every few seconds while indexing ran.
+            self._payload = None
+            self.signals.done.emit(self)
 
 
 # Every populator with work in flight, held STRONGLY until it is shut down.
@@ -1554,8 +1568,21 @@ class DatasetPopulator(QObject):
         # reference held here that object can be collected before the signal is
         # delivered, and the result is silently lost.
         self._inflight: set = set()
-        self._bg_queue: list = []
-        self._bg_root: Node | None = None
+        # Background indexing, for EVERY data root at once. One FIFO of
+        # (root node, job) shared by all roots, so each root's work is kept
+        # until it is done. It used to be a single "current root" whose queue
+        # was REPLACED whenever another root started -- and at start-up every
+        # configured root starts within milliseconds, so all but the last had
+        # their indexing thrown away, every session. Those roots never became
+        # fully cached, each launch redid part of the work, and opening a
+        # sample there meant listing it over the share again; removing a root
+        # and adding it back (making it the last) was the only way to get it
+        # indexed. That was the reported "previously added roots are slow".
+        self._bg_queue: list = []          # [(root node, job)]
+        # (root path, sample path) queued or running, so asking again (a
+        # refresh, a stale check, a duplicate root) never doubles the I/O.
+        self._bg_scheduled: set = set()
+        self._bg_pending: dict = {}        # id(root node) -> jobs not yet back
         self._bg_active = 0
         self._bg_total = 0
         self._bg_done = 0
@@ -1633,17 +1660,29 @@ class DatasetPopulator(QObject):
         """
         self._token.cancel()
         self._save_timer.stop()
-        self._bg_queue = []
-        self._bg_root = None
+        self.cancel_background()
         if self._alive:
             self._flush_index(synchronous=True)
         self._alive = False
         self._drain()
         _LIVE_POPULATORS.discard(self)
 
-    def cancel_background(self) -> None:
-        self._bg_queue = []
-        self._bg_root = None
+    def cancel_background(self, root_node: Node | None = None) -> None:
+        """Drop queued background work -- one root's, or everyone's.
+
+        Running tasks still report back. Removing ONE root must not cancel
+        the others: it used to clear the whole queue, so removing any root
+        stopped every other root's indexing for the rest of the session.
+        """
+        keep = []
+        for owner, job in self._bg_queue:
+            if root_node is None or owner is root_node:
+                self._bg_scheduled.discard((str(owner.path), job[0]))
+                self._release(owner, 1)
+                self._bg_done += 1
+            else:
+                keep.append((owner, job))
+        self._bg_queue = keep
 
     # -- population ----------------------------------------------------------
 
@@ -1905,16 +1944,21 @@ class DatasetPopulator(QObject):
         in the background, and cached. The next session opens any sample with
         no filesystem access at all, and the PULPROG filter reaches samples
         the user never expanded.
+
+        Safe to call for any number of roots, in any order, at any time:
+        each call ADDS that root's outstanding samples to the shared queue and
+        skips the ones already queued or running.
         """
-        if self._token.stopped:
+        if self._token.stopped or not self._model.is_live(root_node):
             return
-        if self._bg_root is root_node and (self._bg_queue or self._bg_active):
-            return      # already working on this root; queuing again doubles the I/O
         index = self._model.cached_index(root_node.path)
         if index is None:
             return
+        root_key = str(root_node.path)
         jobs = []
         for sample in index.samples:
+            if (root_key, sample.path) in self._bg_scheduled:
+                continue
             if not sample.detailed:
                 jobs.append((sample.path, True, []))
             elif not sample.meta_complete:
@@ -1924,25 +1968,55 @@ class DatasetPopulator(QObject):
                       if e.displayable and not e.meta])
                 )
         if not jobs:
-            self.indexProgress.emit(str(root_node.path), 0, 0)
-            self._check_staleness(root_node)
+            if not self._bg_pending.get(id(root_node)):
+                self._emit_progress(root_node)
+                self._check_staleness(root_node)
             return
-        self._bg_root = root_node
-        self._bg_queue = jobs
-        self._bg_total = len(jobs)
-        self._bg_done = 0
-        self.indexProgress.emit(str(root_node.path), 0, self._bg_total)
+        for job in jobs:
+            self._bg_scheduled.add((root_key, job[0]))
+            self._bg_queue.append((root_node, job))
+        self._bg_pending[id(root_node)] = (
+            self._bg_pending.get(id(root_node), 0) + len(jobs)
+        )
+        self._bg_total += len(jobs)
+        self._emit_progress(root_node)
         self._pump_background()
+
+    def _emit_progress(self, root_node: Node) -> None:
+        """One running count over all roots; (0, 0) once nothing is left."""
+        if not self._bg_queue and not self._bg_active:
+            self._bg_total = self._bg_done = 0
+        self.indexProgress.emit(str(root_node.path), self._bg_done, self._bg_total)
+
+    def _release(self, root_node: Node, count: int) -> int:
+        """Count jobs of a root as finished; return how many remain."""
+        key = id(root_node)
+        left = max(0, self._bg_pending.get(key, 0) - count)
+        if left:
+            self._bg_pending[key] = left
+        else:
+            self._bg_pending.pop(key, None)
+        return left
 
     def _pump_background(self) -> None:
         while self._bg_active < self.INDEX_INFLIGHT and self._bg_queue:
-            if self._token.stopped or self._bg_root is None:
+            if self._token.stopped:
                 return
-            batch = self._bg_queue[:self.INDEX_BATCH]
-            del self._bg_queue[:self.INDEX_BATCH]
-            task = _IndexTask(
-                self._model.reader, self._bg_root, batch, self._token
-            )
+            root_node, _job = self._bg_queue[0]
+            # A batch is one root's jobs: the task reports per root node.
+            batch = []
+            while (self._bg_queue and len(batch) < self.INDEX_BATCH
+                   and self._bg_queue[0][0] is root_node):
+                batch.append(self._bg_queue.pop(0)[1])
+            if not self._model.is_live(root_node):
+                # Removed while queued: forget its work instead of reading a
+                # share the user has just let go of.
+                for job in batch:
+                    self._bg_scheduled.discard((str(root_node.path), job[0]))
+                self._release(root_node, len(batch))
+                self._bg_done += len(batch)
+                continue
+            task = _IndexTask(self._model.reader, root_node, batch, self._token)
             task.signals.done.connect(self._on_index_batch)
             self._inflight.add(task)
             self._bg_active += 1
@@ -1953,31 +2027,33 @@ class DatasetPopulator(QObject):
             return
         self._inflight.discard(task)
         self._bg_active = max(0, self._bg_active - 1)
-        if not self._model.is_live(root_node):
-            return
-        index = self._model.cached_index(root_node.path)
-        if index is None:
-            return
-        for sample_path, expnos, metadata in results:
-            entry = index.find(sample_path)
-            if entry is None:
-                continue
-            if expnos is not None:
-                self._model.merge_expnos(entry, expnos, sample_path)
-            by_name = {e.name: e for e in entry.expnos}
-            for name, values in metadata:
-                expno = by_name.get(name)
-                if expno is None:
+        root_key = str(root_node.path)
+        for job in task._jobs:
+            self._bg_scheduled.discard((root_key, job[0]))
+        left = self._release(root_node, len(task._jobs))
+        self._bg_done += len(task._jobs)
+        live = self._model.is_live(root_node)
+        index = self._model.cached_index(root_node.path) if live else None
+        if index is not None:
+            for sample_path, expnos, metadata in results:
+                entry = index.find(sample_path)
+                if entry is None:
                     continue
-                _write_meta(expno, values)
-            entry.invalidate()
-            self._model.refresh_sample_rows(root_node, sample_path, entry)
-            self._bg_done += 1
-        self._model.mark_dirty(root_node.path)
-        self.indexProgress.emit(str(root_node.path), self._bg_done, self._bg_total)
-        self._schedule_save()
+                if expnos is not None:
+                    self._model.merge_expnos(entry, expnos, sample_path)
+                by_name = {e.name: e for e in entry.expnos}
+                for name, values in metadata:
+                    expno = by_name.get(name)
+                    if expno is None:
+                        continue
+                    _write_meta(expno, values)
+                entry.invalidate()
+                self._model.refresh_sample_rows(root_node, sample_path, entry)
+            self._model.mark_dirty(root_node.path)
+            self._schedule_save()
         self._pump_background()
-        if not self._bg_queue and not self._bg_active:
+        self._emit_progress(root_node)
+        if live and not left:
             self._check_staleness(root_node)
 
     def _check_staleness(self, root_node: Node) -> None:
@@ -2011,7 +2087,6 @@ class DatasetPopulator(QObject):
             entry = index.find(path)
             if entry is not None:
                 entry.detailed = False      # re-list it on the next pass
-        self._bg_root = None                # allow a fresh pass for this root
         self.start_background_index(root_node)
 
     # -- cache persistence ---------------------------------------------------
@@ -2040,5 +2115,9 @@ class DatasetPopulator(QObject):
                 index_store.save_payload(key, payload)
                 continue
             task = _SaveTask(key, payload)
+            task.signals.done.connect(self._on_saved)
             self._inflight.add(task)
             self._bg_pool.start(task)
+
+    def _on_saved(self, task) -> None:
+        self._inflight.discard(task)

@@ -417,10 +417,11 @@ class DatasetBrowser(QWidget):
         """Drop a configured data root. Removes only the entry, never files."""
         for row in range(self._model.rowCount()):
             if self._model.index(row, 0).internalPointer() is node:
-                # Stop the background indexer first: it holds this node and
-                # would otherwise keep reading a share the user just removed,
-                # and every result would have to be discarded anyway.
-                self._populator.cancel_background()
+                # Stop this root's background indexing first: it would
+                # otherwise keep reading a share the user just removed, and
+                # every result would be discarded anyway. Only THIS root's --
+                # the other roots' indexing carries on.
+                self._populator.cancel_background(node)
                 self._model.remove_data_root(row)
                 self.dataRootRemoved.emit()
                 self.statusChanged.emit("")

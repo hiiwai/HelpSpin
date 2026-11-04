@@ -25,7 +25,7 @@ conda create -n helspin python=3.11 && conda activate helspin
 pip install -e ".[dev]"
 helspin              # launch
 helspin --version    # prints version, needs no display
-pytest               # 1350 tests
+pytest               # 1359 tests
 ```
 
 **Version discipline:** `pyproject.toml` is the single source of truth.
@@ -765,6 +765,19 @@ Both live under `build/`, never in the repository.
   box and dragging a spectrum.
 - **The box zoom must respect 4.r and 4.s**: no `_y_range` in stacked mode,
   and never clear an explicit `_y_range` on an X zoom.
+
+## Background indexing covers every root (0.9.15)
+
+- The background indexer is one FIFO of (root node, job) shared by all
+  roots, with `_bg_scheduled` (root path, sample path) for de-duplication and
+  `_bg_pending` per root. **Never go back to a single "current root"**: all
+  roots start together at launch, and a replaced queue silently starves every
+  root but the last, every session -- the 0.9.15 report.
+- `cancel_background(node)` drops ONE root's queued work; removing a root
+  must not stop the others.
+- Anything put in `_inflight` must have a signal that takes it out again.
+  `_SaveTask` had none, so every save's full index payload lived for the
+  whole session.
 
 ## macOS signing and notarisation (0.9.13)
 
