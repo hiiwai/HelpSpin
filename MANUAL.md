@@ -1,6 +1,6 @@
 # HelSpin — User Manual
 
-Version 0.9.12
+Version 0.9.13
 
 Compare Bruker NMR spectra and build publication figures.
 
@@ -24,11 +24,16 @@ saved in its own session files.
 
 ## 2. Installing
 
-On macOS, if you have `HelSpin-<version>-<arch>.dmg`: open it, drag HelSpin to
-Applications, and on first launch **right-click the app and choose Open** to
-get past Gatekeeper (once only — the app is not signed with an Apple Developer
-ID). No Python or conda is needed. Check the architecture in the filename:
-`arm64` for Apple Silicon, `x86_64` for Intel; they are not interchangeable.
+On macOS, if you have `HelSpin-<version>-<arch>.dmg`: open it and drag
+HelSpin to Applications. No Python or conda is needed. Check the architecture
+in the filename: `arm64` for Apple Silicon, `x86_64` for Intel; they are not
+interchangeable.
+
+If the image is not notarised by Apple, the first launch is blocked
+("Apple could not verify “HelSpin” is free of malware"). Click **Done**, then
+**System Settings → Privacy & Security → Open Anyway** (once only). On macOS
+15 and later, right-click → Open no longer gets past this. `INSTALL.md` has
+the details and a Terminal alternative.
 
 Otherwise, and on Windows and Linux, see `INSTALL.md`. Linux needs one system
 library (`libxcb-cursor0`) before the first run.

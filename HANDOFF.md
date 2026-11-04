@@ -25,7 +25,7 @@ conda create -n helspin python=3.11 && conda activate helspin
 pip install -e ".[dev]"
 helspin              # launch
 helspin --version    # prints version, needs no display
-pytest               # 1334 tests
+pytest               # 1350 tests
 ```
 
 **Version discipline:** `pyproject.toml` is the single source of truth.
@@ -765,6 +765,18 @@ Both live under `build/`, never in the repository.
   box and dragging a spectrum.
 - **The box zoom must respect 4.r and 4.s**: no `_y_range` in stacked mode,
   and never clear an explicit `_y_range` on an X zoom.
+
+## macOS signing and notarisation (0.9.13)
+
+- Signing identity comes from `HELSPIN_CODESIGN_IDENTITY` and is given to
+  PyInstaller in the spec, which signs inside-out with hardened runtime and
+  a timestamp. **Never `codesign --deep` a Developer ID build afterwards**;
+  that replaces the per-binary signatures and notarisation can fail.
+- Judge notarisation by `notarytool --output-format json` status
+  ("Accepted"), not by the exit code of `submit --wait`.
+- macOS 15+ removed right-click → Open as a Gatekeeper bypass; the user
+  route is Privacy & Security → Open Anyway (or `xattr`). Keep INSTALL.md
+  in step if Apple changes it again.
 
 ## ON toolbar buttons on macOS (0.9.12)
 

@@ -1,0 +1,125 @@
+name: macOS disk image
+
+# Builds HelSpin-<version>-<arch>.dmg on GitHub's Macs and attaches it to a
+# DRAFT release (published releases are immutable in this repository).
+#
+#   gh release create v0.9.13 --draft --title "HelSpin 0.9.13" --notes "..."
+#   gh workflow run macos-dmg.yml -f tag=v0.9.13
+#
+# Without signing secrets the image is ad-hoc signed, exactly like a local
+# packaging/build_macos.sh run: it works, but Gatekeeper blocks it on first
+# launch on another Mac. With the secrets below it is signed with a Developer
+# ID and notarised, and opens with no warning. All of them are optional, and
+# the signing ones only take effect together:
+#
+#   MACOS_CERTIFICATE           Developer ID Application certificate + key,
+#                               exported as .p12, then base64-encoded
+#   MACOS_CERTIFICATE_PASSWORD  the .p12's export password
+#   MACOS_SIGNING_IDENTITY      "Developer ID Application: NAME (TEAMID)"
+#   NOTARY_KEY                  App Store Connect API key (.p8), base64-encoded
+#   NOTARY_KEY_ID               its key ID
+#   NOTARY_ISSUER               its issuer ID
+#
+# See packaging/BUILD.md, "Signing and notarising".
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build, e.g. v0.9.13 (the release must still be a draft)"
+        required: true
+      intel:
+        description: "Also build for Intel Macs (x86_64)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each architecture is a separate build: PySide6 publishes no
+        # universal2 wheels, so one image cannot serve both.
+        runner: ${{ fromJSON(inputs.intel && '["macos-latest", "macos-15-intel"]' || '["macos-latest"]') }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      HAS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE != '' && secrets.MACOS_SIGNING_IDENTITY != '' }}
+      HAS_NOTARY_KEY: ${{ secrets.NOTARY_KEY != '' && secrets.NOTARY_KEY_ID != '' && secrets.NOTARY_ISSUER != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install HelSpin and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install . pyinstaller
+
+      - name: Import the Developer ID certificate
+        if: env.HAS_CERTIFICATE == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/helspin-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$KEYCHAIN" \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -f pkcs12 -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          # Lets codesign use the key without a GUI password prompt.
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          # Put it first in the search list, keeping the existing ones.
+          EXISTING=()
+          while IFS= read -r entry; do
+            EXISTING+=("$(echo "$entry" | xargs)")   # strips spaces and quotes
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$KEYCHAIN" "${EXISTING[@]}"
+          echo "HELSPIN_CODESIGN_IDENTITY=$MACOS_SIGNING_IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Prepare notarisation
+        if: env.HAS_CERTIFICATE == 'true' && env.HAS_NOTARY_KEY == 'true'
+        env:
+          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+        run: |
+          echo "$NOTARY_KEY" | base64 --decode > "$RUNNER_TEMP/notary_key.p8"
+          {
+            echo "HELSPIN_NOTARY_KEY=$RUNNER_TEMP/notary_key.p8"
+            echo "HELSPIN_NOTARY_KEY_ID=$NOTARY_KEY_ID"
+            echo "HELSPIN_NOTARY_ISSUER=$NOTARY_ISSUER"
+          } >> "$GITHUB_ENV"
+
+      - name: Build the disk image
+        run: ./packaging/build_macos.sh
+
+      - name: Keep the image as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HelSpin-${{ inputs.tag }}-${{ matrix.runner }}
+          path: dist/HelSpin-*.dmg
+          if-no-files-found: error
+
+      - name: Attach to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ inputs.tag }}" dist/HelSpin-*.dmg --clobber
+
+      - name: Remove the signing material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/notary_key.p8"
+          security delete-keychain "$RUNNER_TEMP/helspin-signing.keychain-db" 2>/dev/null || true

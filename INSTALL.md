@@ -148,21 +148,47 @@ conda, no pip.
 
 ### First launch
 
-macOS will refuse it the first time:
+A **notarised** image (signed by the author with an Apple Developer ID and
+checked by Apple) opens like any other application, with no warning.
 
-> "HelSpin" cannot be opened because the developer cannot be verified.
+An image that is **not notarised** is blocked the first time. That is
+Gatekeeper, not a fault in the application. On macOS 15 (Sequoia) and later
+the message is:
 
-That is Gatekeeper, not a fault in the application. HelSpin is not signed with
-an Apple Developer ID, which costs 99 USD a year. To open it:
+> "HelSpin" Not Opened — Apple could not verify "HelSpin" is free of malware
+> that may harm your Mac or compromise your privacy.
 
-**Right-click (or Control-click) HelSpin in Applications and choose Open**,
-then confirm. Once only — afterwards it opens normally by double-click.
+(older macOS: *"HelSpin" cannot be opened because the developer cannot be
+verified.*) To allow it, once:
 
-If that option does not appear, run:
+1. Click **Done** (not Move to Trash).
+2. Open **System Settings → Privacy & Security** and scroll down to
+   *Security*. It says *"HelSpin" was blocked to protect your Mac.*
+3. Click **Open Anyway**, confirm with your password or Touch ID, then
+   **Open**.
+
+The button appears only after a launch was blocked, and only for about an
+hour, so try to open the app first. Afterwards HelSpin opens normally.
+
+On macOS 14 and earlier, right-click (Control-click) the app and choose
+**Open** also works. On macOS 15 and later that shortcut no longer bypasses
+Gatekeeper; use Open Anyway.
+
+**Terminal alternative** (any macOS version; also when Open Anyway is missing,
+e.g. hidden by a managed Mac's policy):
 
 ```
 xattr -dr com.apple.quarantine /Applications/HelSpin.app
 ```
+
+This removes the "downloaded from the internet" mark from the copy in
+Applications only. If your institution's IT forbids even that, use the conda
+installation above: running from source involves no app bundle, so
+Gatekeeper never asks.
+
+A message that the app **"is damaged and can't be opened"** means the copy
+was altered after it was signed (or copied incompletely): delete it, mount
+the disk image again and drag a fresh copy to Applications.
 
 ### Which build you need
 

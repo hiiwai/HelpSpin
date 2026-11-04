@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.9.13 - 2026-11-04
+
+No change to the application itself (same as 0.9.12); this release is about
+installing it on a Mac.
+
+### macOS: first-launch instructions brought up to date
+
+On macOS 15 (Sequoia) and later, right-click → Open no longer gets an
+unnotarised app past Gatekeeper, so the documented route stopped working.
+INSTALL.md, MANUAL and the build script's closing note now give the current
+one -- click Done, then System Settings → Privacy & Security → **Open
+Anyway** -- with the Terminal alternative (`xattr -dr com.apple.quarantine
+/Applications/HelSpin.app`), what to do on a managed Mac, and what "is
+damaged and can't be opened" means.
+
+### macOS: signed and notarised disk images (optional)
+
+`packaging/build_macos.sh` can now produce a .dmg that opens on any Mac with
+no warning. With an Apple Developer ID (Apple Developer Program, 99 USD/year)
+set in `HELSPIN_CODESIGN_IDENTITY`, PyInstaller signs every binary with
+hardened runtime and `packaging/entitlements.plist`; with a notarisation
+profile (`HELSPIN_NOTARY_PROFILE`) or API key as well, the script notarises
+the image with Apple, fails unless Apple accepts it, staples the ticket and
+checks Gatekeeper's verdict. With nothing set the build is ad-hoc signed
+exactly as before.
+
+### Added: a GitHub workflow that builds the .dmg
+
+`.github/workflows/macos-dmg.yml` builds the disk image on GitHub's Macs
+(Apple Silicon; Intel on request) and attaches it to a draft release, like
+the Windows installer workflow. It signs and notarises when the signing
+secrets are present (packaging/BUILD.md lists them), and is ad-hoc otherwise.
+
+1350 tests (up from 1334).
+
 ## 0.9.12 - 2026-11-04
 
 ### Fixed: clicking the plot changed the x range

@@ -26,6 +26,7 @@ PySide6 does not currently publish, so a single fat build is not available.
 Build on each architecture you need to support, or state the requirement.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -42,6 +43,16 @@ from spec_support import write_build_files  # noqa: E402
 # VERSION_FILE travels inside the bundle, because a frozen app has no package
 # metadata and would otherwise report "0.0.0+unknown" in its title and About.
 VERSION, VERSION_FILE, _VERSION_INFO = write_build_files(ROOT)
+
+# Signing. Unset (the default): PyInstaller's ad-hoc signature, enough to run
+# on the build machine but refused by Gatekeeper on any other Mac. Set to a
+# "Developer ID Application: NAME (TEAMID)" identity in the keychain:
+# PyInstaller signs every binary inside-out, then the bundle, with hardened
+# runtime and a secure timestamp -- what notarisation requires -- using the
+# entitlements file beside this spec. See packaging/BUILD.md.
+CODESIGN_IDENTITY = os.environ.get("HELSPIN_CODESIGN_IDENTITY", "").strip() or None
+ENTITLEMENTS = (str(ROOT / "packaging" / "entitlements.plist")
+                if CODESIGN_IDENTITY else None)
 
 # Ship the licence, notices and artwork INSIDE the bundle. The licence dialog
 # reads these from helspin/resources at run time, so they must land at the same
@@ -96,8 +107,8 @@ exe = EXE(
     # unless every dependency ships universal2 wheels -- PySide6 does not, and
     # the build fails late and confusingly when one of them does not.
     target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
+    codesign_identity=CODESIGN_IDENTITY,
+    entitlements_file=ENTITLEMENTS,
 )
 
 coll = COLLECT(

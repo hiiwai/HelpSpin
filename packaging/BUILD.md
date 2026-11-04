@@ -168,35 +168,89 @@ ad-hoc signature is not cosmetic: on Apple Silicon an unsigned binary is
 killed on launch rather than warned about, so it is what makes the app run at
 all on your own machine.
 
-It does **not** satisfy Gatekeeper on someone else's Mac. On first launch they
-will see *"HelSpin cannot be opened because the developer cannot be verified"*.
-The recipient must either:
+It does **not** satisfy Gatekeeper on someone else's Mac. On first launch
+macOS 15+ says *"Apple could not verify "HelSpin" is free of malware"* (older:
+*"cannot be opened because the developer cannot be verified"*). The recipient
+must either:
 
-- **right-click the app and choose Open**, then confirm — once only; or
+- click **Done**, then **System Settings → Privacy & Security → Open Anyway**
+  — once only. On macOS 15 and later the old right-click → Open shortcut no
+  longer bypasses Gatekeeper; on 14 and earlier it still works; or
 - run `xattr -dr com.apple.quarantine /Applications/HelSpin.app`
+
+INSTALL.md walks a recipient through both.
 
 This is the macOS counterpart of the "Access is denied" problem on managed
 Windows machines, and it will be the first thing anyone reports.
 
-### Signing and notarising properly
+### Signing and notarising
 
-To remove the warning entirely you need an **Apple Developer Program**
-membership (99 USD/year). With a Developer ID certificate installed:
+The only way to remove the warning for everyone is a **Developer ID**
+signature plus Apple **notarisation**. Both need an **Apple Developer
+Program** membership (99 USD/year; an individual membership is enough, or an
+organisation's, if it will let you sign under its name). No code changes are
+needed; the build script does the rest once the credentials exist.
+
+One-time setup on the Mac that builds:
+
+1. developer.apple.com → Certificates → **+** → *Developer ID Application*.
+   Install it; `security find-identity -v -p codesigning` then lists
+   `Developer ID Application: YOUR NAME (TEAMID)`.
+2. appleid.apple.com → *App-Specific Passwords* → create one, then save the
+   notarisation credentials in the keychain under a name:
+
+   ```
+   xcrun notarytool store-credentials helspin-notary \
+         --apple-id you@example.com --team-id TEAMID \
+         --password APP-SPECIFIC-PASSWORD
+   ```
+
+Every build after that:
 
 ```
-# 1. sign with hardened runtime (notarisation requires it)
-codesign --force --deep --options runtime --timestamp \
-         --sign "Developer ID Application: YOUR NAME (TEAMID)" \
-         dist/HelSpin.app
-
-# 2. notarise the disk image and wait for Apple's verdict
-xcrun notarytool submit dist/HelSpin-<version>-<arch>.dmg \
-      --apple-id you@example.com --team-id TEAMID \
-      --password APP_SPECIFIC_PASSWORD --wait
-
-# 3. staple the ticket so it works offline
-xcrun stapler staple dist/HelSpin-<version>-<arch>.dmg
+export HELSPIN_CODESIGN_IDENTITY="Developer ID Application: YOUR NAME (TEAMID)"
+export HELSPIN_NOTARY_PROFILE=helspin-notary
+./packaging/build_macos.sh
 ```
+
+With `HELSPIN_CODESIGN_IDENTITY` set, the spec makes PyInstaller sign every
+binary inside-out with hardened runtime, a secure timestamp and
+`packaging/entitlements.plist` (no ad-hoc `--deep` re-sign afterwards — that
+would undo it). The script then checks the signature, signs the `.dmg`,
+submits it to Apple, refuses to finish unless Apple returns *Accepted*
+(printing Apple's log if not), staples the ticket so it also works offline,
+and asks Gatekeeper (`spctl`) for its verdict.
+
+The entitlements are the two a frozen Python application needs under
+hardened runtime: executable memory for ctypes/libffi, and loading the
+bundled Python extension libraries. Do not add more without a reason.
+
+#### On GitHub instead of your Mac
+
+`.github/workflows/macos-dmg.yml` builds the same image on GitHub's Macs and
+attaches it to a draft release:
+
+```
+gh release create v<version> --draft --title "HelSpin <version>" --notes "..."
+gh workflow run macos-dmg.yml -f tag=v<version>            # Apple Silicon
+gh workflow run macos-dmg.yml -f tag=v<version> -f intel=true   # + Intel
+```
+
+Without secrets it is ad-hoc signed (the Gatekeeper warning remains). To sign
+and notarise there, add these repository secrets (Settings → Secrets and
+variables → Actions):
+
+| Secret | Value |
+|---|---|
+| `MACOS_CERTIFICATE` | Developer ID Application certificate **with its private key**, exported from Keychain Access as `.p12`, then `base64 -i cert.p12 \| pbcopy` |
+| `MACOS_CERTIFICATE_PASSWORD` | the password chosen for that `.p12` |
+| `MACOS_SIGNING_IDENTITY` | `Developer ID Application: YOUR NAME (TEAMID)` |
+| `NOTARY_KEY` | App Store Connect → Users and Access → Integrations → API key (`.p8`), base64-encoded |
+| `NOTARY_KEY_ID` | that key's ID |
+| `NOTARY_ISSUER` | the issuer ID shown on the same page |
+
+The Intel runner label (`macos-15-intel`) is GitHub's; if GitHub retires it,
+build the Intel image on an Intel Mac with the script instead.
 
 Worth weighing against how the tool is distributed: for a handful of named
 collaborators the right-click-Open instruction is enough. For anything wider,
