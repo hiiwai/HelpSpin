@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.14 - 2026-11-04
+
+No change to the application (same as 0.9.12 and 0.9.13).
+
+### README: installing the ready-made apps
+
+The README -- the page GitHub shows first -- still said there was no
+double-click installer and covered only the conda route. Its Installing
+section now starts with the two ways (ready-made app or release zip), and
+has short sections for the macOS .dmg -- including the current first-launch
+step, System Settings → Privacy & Security → **Open Anyway**, since macOS 15
+no longer accepts right-click → Open -- and the Windows installer
+(SmartScreen's **More info → Run anyway**). The example tag is current.
+
 ## 0.9.13 - 2026-11-04
 
 No change to the application itself (same as 0.9.12); this release is about

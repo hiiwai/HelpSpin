@@ -47,19 +47,60 @@ looked.
 
 ## Installing
 
-HelSpin installs from a release zip into a dedicated Python environment, and
-runs on macOS, Windows and Linux. There is no double-click installer; the steps
-below use conda, which is the same on every platform.
+Two ways, from the
+[**Releases page**](https://github.com/hiiwai/HelpSpin/releases/latest):
 
-Download the latest `helspin-<version>.zip` from the
-[**Releases page**](https://github.com/hiiwai/HelpSpin/releases/latest), or
+- **Ready-made app** (macOS and Windows), when the release has one attached:
+  `HelSpin-<version>-<arch>.dmg` for macOS, `HelSpin-<version>-setup.exe` for
+  Windows. No Python or conda needed. See the next two sections.
+- **From the release zip** into a dedicated Python environment (macOS, Windows
+  and Linux): the conda steps further down, the same on every platform. Use
+  this on Linux, on a managed machine that blocks unsigned apps, or to work on
+  the code.
+
+### macOS app (.dmg)
+
+1. Open `HelSpin-<version>-<arch>.dmg` and drag **HelSpin** onto
+   **Applications**. Pick the architecture of your Mac: `arm64` for Apple
+   Silicon (M1 and later), `x86_64` for Intel. `uname -m` tells you which.
+2. Open HelSpin from Applications.
+
+**First launch.** Unless the release says the image is notarised, macOS blocks
+the first launch with *"Apple could not verify "HelSpin" is free of
+malware"*. This is Gatekeeper refusing an app that is not signed with a paid
+Apple Developer ID, not a fault in HelSpin. Once only:
+
+1. Click **Done** (not Move to Trash).
+2. **System Settings → Privacy & Security**, scroll to *Security*, click
+   **Open Anyway**, confirm with your password or Touch ID, then **Open**.
+
+On macOS 15 (Sequoia) and later, right-click → Open no longer gets past this;
+use Open Anyway. Or, in Terminal, any macOS version:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/HelSpin.app
+```
+
+More, including managed Macs and "is damaged and can't be opened", in
+[INSTALL.md](INSTALL.md#first-launch).
+
+### Windows installer
+
+Run `HelSpin-<version>-setup.exe`. It is not code-signed, so Windows
+SmartScreen may say *"Windows protected your PC"*: click **More info → Run
+anyway**. If your organisation blocks unsigned programs outright, use the
+conda steps below and the managed-machine note further down.
+
+### From the release zip (conda)
+
+Download the latest `helspin-<version>.zip` from the Releases page, or
 install straight from a tag (see the end of this section). Use a **dedicated
 environment** — HelSpin pins `numpy<2.5` (nmrglue crashes on import with newer
 numpy), so installing into a shared environment can disturb other tools. Let
 pip install everything, including PySide6; do **not** `conda install pyside6`
 first, as a conda Qt beside a pip Qt causes DLL conflicts.
 
-### macOS and Linux
+#### macOS and Linux
 
 ```bash
 conda create -n helspin python=3.12
@@ -74,7 +115,7 @@ helspin --version           # console form, for --version / --check
 it Qt fails to start with a misleading "platform plugin could not be
 initialized" message. See [INSTALL.md](INSTALL.md#linux-one-extra-step).
 
-### Windows
+#### Windows
 
 Use the **Anaconda Prompt** (or PowerShell). Note that PowerShell expands the
 Downloads path as `$env:USERPROFILE`, not `%USERPROFILE%`:
@@ -91,7 +132,11 @@ into the window to paste its full path.
 
 ### Upgrading
 
-**Close HelSpin first** — the operating system locks the running executable, and
+**The app (.dmg / installer):** quit HelSpin, then install the newer one the
+same way; it replaces the old copy. On a Mac the first-launch step may be
+asked once more for the new copy.
+
+**The conda install:** **close HelSpin first** — the operating system locks the running executable, and
 an install over a running app fails half-way (`WinError 32` on Windows). Then:
 
 ```bash
@@ -107,7 +152,7 @@ No need to uninstall first; pip replaces the old version. Confirm with
 Instead of downloading the zip, you can install a tagged version directly:
 
 ```bash
-pip install https://github.com/hiiwai/HelpSpin/archive/refs/tags/v0.9.10.zip
+pip install https://github.com/hiiwai/HelpSpin/archive/refs/tags/v0.9.14.zip
 ```
 
 Swap the tag for any version on the
