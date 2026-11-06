@@ -381,10 +381,23 @@ def holds_experiments(path: str) -> bool:
     subfolder counts only if it holds an experiment file; the lowest-numbered
     few are looked at. Cost: one more listing per sample, during a search.
     """
-    return any(
-        looks_like_experiment(entry.path)
-        for entry in numbered_subfolders(path)[:SAMPLE_PROBES]
-    )
+    try:
+        with os.scandir(path) as entries:
+            names = [e.name for e in entries if is_number_name(e.name)]
+    except OSError:
+        return False
+    return numbered_names_hold_experiments(path, names)
+
+
+def numbered_names_hold_experiments(path: str, names) -> bool:
+    """Do any of the lowest-numbered ``names`` inside ``path`` hold an
+    experiment? Checked by NAME, with no type check per entry: on shares
+    that do not report entry types every is_dir() is a network round trip,
+    and asking it of every experiment folder made a search cost one round
+    trip per EXPERIMENT -- 4.6x the round trips of 0.9.17 on such a share. A
+    numbered FILE simply fails to list and counts as no experiment."""
+    lowest = sorted(names, key=int)[:SAMPLE_PROBES]
+    return any(looks_like_experiment(str(Path(path) / n)) for n in lowest)
 
 
 def _has_integer_child_dir(entry_path: str) -> bool:

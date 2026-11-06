@@ -91,8 +91,12 @@ a local disk hides everything.
 
 1. **Cache first.** `_DiscoverTask` loads the on-disk index before touching
    the share; a complete index means no walk. Only Refresh re-walks.
-2. **Tiered work.** Discovery = one listing per folder, plus one listing of
-   a numbered subfolder to confirm it is an EXPERIMENT
+2. **Tiered work.** Discovery = ONE listing per folder (`classify`: the same
+   listing decides "sample?" and gives the folders below -- never list a
+   folder twice), plus one listing of a numbered subfolder to confirm it is
+   an EXPERIMENT, found by NAME (never `is_dir()` per experiment: on shares
+   that do not report entry types that is a round trip per experiment;
+   0.9.18-0.9.20 did it, 4.6x the round trips)
    (`domain.paths.holds_experiments`, 0.9.18); experiment lists only for
    opened samples or by the background indexer; metadata = one `acqus` read
    per row (`probe_row`), never `probe()` with its nine round trips.

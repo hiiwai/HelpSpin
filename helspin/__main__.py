@@ -1037,8 +1037,14 @@ def scan_command(root, find=None) -> int:
         return 2
     print(f"Searching {root_path} as the explorer does (Ctrl+C to stop)...")
 
+    import time as _time
+
+    started = _time.monotonic()
+
     def progress(count, last):
-        sys.stderr.write(f"\r  {count:,} samples so far ... {last[-60:]:<60}")
+        took = max(_time.monotonic() - started, 1e-6)
+        sys.stderr.write(f"\r  {count:,} samples, {took:.0f} s, "
+                         f"{count / took:.0f}/s ... {last[-50:]:<50}")
         sys.stderr.flush()
 
     try:

@@ -54,7 +54,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..domain.paths import holds_experiments as is_sample_dir
-from ..domain.paths import is_number_name
+from ..domain.paths import is_number_name, numbered_names_hold_experiments
 
 # 2: expno entries gained structural flags and cached metadata. An older
 # cache is simply ignored and rebuilt -- it holds nothing worth migrating.
@@ -721,20 +721,67 @@ def discover_samples(
         root_real = root
 
     pool = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
+    # A second pool for entry type checks inside one listing. Where a share
+    # does not report entry types each is_dir() is a round trip; done one
+    # after another, a folder of 200 sample folders cost 200 sequential round
+    # trips. (Separate from `pool`: classify() already runs there, and
+    # waiting on the same pool from inside it can deadlock.)
+    type_pool = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
+
+    def is_folder(entry) -> bool:
+        try:
+            return entry.is_dir()
+        except OSError as exc:
+            _note(problems, entry.path, exc)
+            return False
     # Checked a chunk at a time, so a cancel or the limit is noticed within
     # one chunk rather than after a directory of ten thousand children.
     chunk = max(1, workers * 4)
 
-    def check(path: str) -> bool:
+    def listing(path: str) -> list:
+        """All entries of one folder, read ONCE. A failed read is retried
+        once (shares hiccup); then whatever was read is kept and the
+        failure recorded."""
+        entries: list = []
+        for attempt in (1, 2):
+            entries = []
+            try:
+                with os.scandir(path) as it:
+                    entries.extend(it)
+            except OSError as exc:
+                if attempt == 2:
+                    _note(problems, path, exc)
+                continue
+            break
+        return entries
+
+    def classify(path: str):
+        """(is_sample, subfolders) from ONE listing of ``path``.
+
+        Each folder is listed exactly once: deciding "is it a sample?" and
+        "what is below it?" used to be two listings of every folder that was
+        not a sample. And a sample's own entries are never type-checked --
+        only its lowest numbered names are looked into.
+        """
         try:
-            return is_sample_dir(path)
+            entries = listing(path)
+            numbered = [e.name for e in entries if is_number_name(e.name)]
+            if numbered and numbered_names_hold_experiments(path, numbered):
+                return True, None
+            if type_pool is not None and len(entries) > 1:
+                flags = list(type_pool.map(is_folder, entries))
+            else:
+                flags = [is_folder(e) for e in entries]
+            subfolders = [e for e, f in zip(entries, flags, strict=True) if f]
+            subfolders.sort(key=lambda e: e.name)
+            return False, subfolders
         except Exception as exc:      # noqa: BLE001 -- one folder, not the search
             _note(problems, path, exc)
-            return False
+            return False, []
 
-    def candidates(directory: str) -> list:
+    def candidates(subfolders: list) -> list:
         out = []
-        for child in _sub_directories(directory, problems):
+        for child in subfolders:
             if child.name == "pdata":
                 continue
             try:
@@ -771,13 +818,14 @@ def discover_samples(
         except ValueError:
             resume = None           # not below this root: search it all
 
-    def walk(directory: str, remaining: int, parts: tuple = ()) -> bool:
-        """False means: stop the whole walk (limit reached or cancelled)."""
+    def walk(subfolders: list, remaining: int, parts: tuple = ()) -> bool:
+        """Search below a folder whose subfolders are already listed.
+        False means: stop the whole walk (limit reached or cancelled)."""
         if remaining < 0:
             return True
         if stopped():
             return False
-        children = candidates(directory)
+        children = candidates(subfolders)
         through = None              # an ancestor of the resume point
         if resume is not None:
             todo = []
@@ -792,18 +840,22 @@ def discover_samples(
                     continue        # (or it IS the resume point: known)
                 todo.append(child)
             children = todo
-            if through is not None and not walk(
-                    through.path, remaining - 1, parts + (through.name,)):
-                return False
+            if through is not None:
+                _sample, below = classify(through.path)
+                if not walk(below or [], remaining - 1,
+                            parts + (through.name,)):
+                    return False
         for start in range(0, len(children), chunk):
             if stopped():
                 return False
             part = children[start:start + chunk]
+            # The children are listed in parallel; each listing serves both
+            # the sample check and, for a non-sample, the walk below it.
             if pool is not None and len(part) > 1:
-                verdicts = list(pool.map(check, [c.path for c in part]))
+                results = list(pool.map(classify, [c.path for c in part]))
             else:
-                verdicts = [check(c.path) for c in part]
-            for child, is_sample in zip(part, verdicts, strict=True):
+                results = [classify(c.path) for c in part]
+            for child, (is_sample, below) in zip(part, results, strict=True):
                 if len(found) >= limit:
                     return False
                 if stopped():
@@ -812,7 +864,7 @@ def discover_samples(
                     emit(child.path)
                     continue    # a sample is a leaf for this purpose
                 try:
-                    if not walk(child.path, remaining - 1,
+                    if not walk(below or [], remaining - 1,
                                 parts + (child.name,)):
                         return False
                 except Exception as exc:  # noqa: BLE001 -- skip it, go on
@@ -820,14 +872,17 @@ def discover_samples(
         return True
 
     try:
-        if check(root):
+        is_sample, below = classify(root)
+        if is_sample:
             emit(root)
             flush()
             return found, False
-        completed = walk(root, depth)
+        completed = walk(below or [], depth)
     finally:
         if pool is not None:
             pool.shutdown(wait=True)
+        if type_pool is not None:
+            type_pool.shutdown(wait=True)
     flush()
     # Cancellation is not truncation: the caller asked to stop, and saying
     # "your root is too big" for that would be a lie shown in the status bar.
@@ -996,6 +1051,18 @@ def scan_report(root, find=None, out=print, progress=None) -> int:
     """
     root = Path(root).expanduser()
     problems: list = []
+    # How long one request to the share takes -- what every listing costs.
+    timings = []
+    for _ in range(5):
+        tick = time.perf_counter()
+        try:
+            os.stat(root)
+        except OSError:
+            break
+        timings.append(time.perf_counter() - tick)
+    if timings:
+        typical = sorted(timings)[len(timings) // 2] * 1000
+        out(f"One request to this share takes ~{typical:.0f} ms.")
     started = time.monotonic()
     count = [0]
 
@@ -1009,7 +1076,8 @@ def scan_report(root, find=None, out=print, progress=None) -> int:
         workers=DISCOVER_WORKERS, problems=problems,
     )
     took = time.monotonic() - started
-    out(f"Searched {root} in {took:.0f} s: {len(paths):,} samples"
+    rate = len(paths) / took if took > 0 else 0.0
+    out(f"Searched {root} in {took:.0f} s ({rate:.0f} samples/s): {len(paths):,} samples"
         + (f" -- STOPPED at the {SAMPLE_LIMIT:,}-sample limit" if truncated else "")
         + ".")
     by_top: dict = {}

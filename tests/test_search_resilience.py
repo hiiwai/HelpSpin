@@ -124,14 +124,14 @@ def test_a_unicode_digit_folder_does_not_stop_the_search(tmp_path):
 def test_an_unexpected_error_in_one_folder_skips_only_that_folder(tmp_path,
                                                                   monkeypatch):
     root = volume(tmp_path)
-    real = di.is_sample_dir
+    real = os.scandir
 
-    def flaky(path):
-        if path.endswith("UH"):
-            raise RuntimeError("something odd")
+    def flaky(path="."):
+        if os.fspath(path).endswith("UH"):
+            raise RuntimeError("something odd")       # not even an OSError
         return real(path)
 
-    monkeypatch.setattr(di, "is_sample_dir", flaky)
+    monkeypatch.setattr(os, "scandir", flaky)
     problems = []
     found, _ = di.discover_samples(root, workers=8, problems=problems)
     assert str(root / SAMPLE) in found
@@ -368,3 +368,60 @@ def test_a_complete_index_records_no_resume_point(qtbot, tmp_path):
     browser.shutdown()
     saved = di.load_index(root)
     assert saved.complete and saved.resume_after == ""
+
+
+# ------------------------------------------------- round trips per search
+
+
+class _CountingEntry:
+    def __init__(self, real, counter):
+        self._real, self._counter = real, counter
+        self.name, self.path = real.name, real.path
+
+    def is_dir(self, *a, **k):
+        self._counter["is_dir"] += 1        # a round trip where types are unknown
+        return self._real.is_dir(*a, **k)
+
+    def is_symlink(self):
+        return self._real.is_symlink()
+
+    def stat(self, *a, **k):
+        return self._real.stat(*a, **k)
+
+
+def test_experiment_folders_are_never_type_checked(tmp_path, monkeypatch):
+    """0.9.18-0.9.20 type-checked every numbered entry of every sample: on a
+    share that does not report entry types, one round trip per EXPERIMENT
+    (2297 round trips for 150 samples where 0.9.17 needed 497)."""
+    root = tmp_path / "vol"
+    for s in range(6):
+        for e in range(1, 31):
+            make_expno(root / "nmr" / f"S{s}", e)
+    counter = {"is_dir": 0, "scandir": 0}
+    real = os.scandir
+
+    class Listing:
+        def __init__(self, it):
+            self._it = it
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *x):
+            self._it.close()
+
+        def __iter__(self):
+            return (_CountingEntry(e, counter) for e in self._it)
+
+    def scandir(path="."):
+        counter["scandir"] += 1
+        return Listing(real(path))
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    found, _ = di.discover_samples(root, workers=8)
+    assert len(found) == 6
+    # Type checks only for the folders above the samples (vol: 1, nmr: 6).
+    assert counter["is_dir"] <= 1 + 6
+    # Each folder listed ONCE (vol, nmr, 6 samples), plus one experiment per
+    # sample looked into.
+    assert counter["scandir"] <= 2 + 6 + 6

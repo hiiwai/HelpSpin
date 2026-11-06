@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.9.21 - 2026-11-06 (test build -- not published until confirmed)
+
+### Faster search over network shares
+
+Reported: `helspin --scan` of a whole volume extremely slow. Two costs had
+crept into the search in 0.9.18-0.9.20, and they hit hardest on shares that
+do not report whether an entry is a folder (each such check is a network
+round trip):
+
+- Every numbered entry of every sample was type-checked to find its
+  experiments: one round trip per EXPERIMENT, the very cost the search was
+  designed to avoid. Experiments are now recognised by name, and only the
+  lowest-numbered few are looked into.
+- Every folder that was not a sample was listed twice. Each folder is now
+  listed once; that one listing decides whether it is a sample and gives the
+  folders to search below it.
+- The remaining type checks inside one folder now run in parallel.
+
+Measured on a simulated share, 150 samples x 12 experiments, 10 ms per
+request: where entry types are not reported, 2297 round trips and 3.7 s
+(0.9.20) -> 481 round trips and 0.5 s (0.9.17: 497 and 2.4 s); where they are
+reported, 332 -> 316 round trips, 0.4 s.
+
+`helspin --scan` now reports how long one request to the share takes, and
+shows the search's speed while it runs.
+
+1463 tests (up from 1462).
+
 ## 0.9.20 - 2026-11-06 (test build -- not published until confirmed)
 
 ### Fixed: one unreadable folder could hide or stop the whole search
