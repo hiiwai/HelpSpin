@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.9.19 - 2026-11-06
+
+### Find samples by the folders they are in
+
+Reported: "not only NRAS but the ETHZ directory is not discovered". The tree
+lists samples directly under their data root by their own names, so a group
+folder such as ETHZ is nowhere on screen, and the filter matched only sample
+names and pulse programmes -- typing "ETHZ" found nothing even when every
+sample below it had been found. The filter now also matches the folders
+between the data root and each sample (`ETHZ`, `Shared/NRAS`, ...), and
+hovering over a sample shows its folder.
+
+### `helspin --why` reports the saved index accurately
+
+It reported the CURRENT sample limit for a search cut off under an older
+version's lower one, and "an earlier session" instead of a date. A finished
+search now records when it ran and, if it stopped early, at which limit;
+`--why` reports both, and says when a saved search is incomplete or from an
+older version (and will therefore be repeated at the next start). Starting
+from the saved index does not count as a search.
+
+1433 tests (up from 1420).
+
 ## 0.9.18 - 2026-11-06
 
 ### Fixed: whole folders of data not found

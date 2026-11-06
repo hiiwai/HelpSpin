@@ -132,7 +132,7 @@ def test_a_root_well_under_the_limit_says_nothing(qtbot, tmp_path, monkeypatch):
     qtbot.addWidget(browser)
     said = []
     browser.sampleLimit.connect(lambda *a: said.append(a))
-    qtbot.waitUntil(lambda: browser.model.root_nodes()[0].children, timeout=5000)
+    qtbot.waitUntil(lambda: bool(browser.model.root_nodes()[0].children), timeout=5000)
     qtbot.wait(100)
     assert said == []
     browser.shutdown()
@@ -163,7 +163,7 @@ def test_the_window_warns_once_per_root_and_kind(qtbot, monkeypatch):
 def test_small_roots_filter_at_once(qtbot, tmp_path):
     browser = DatasetBrowser([DataRoot(name="600", path=_root_with(tmp_path, 3))])
     qtbot.addWidget(browser)
-    qtbot.waitUntil(lambda: browser.model.root_nodes()[0].children, timeout=5000)
+    qtbot.waitUntil(lambda: bool(browser.model.root_nodes()[0].children), timeout=5000)
     browser._filter_edit.setText("S001")
     assert browser._proxy.filterRegularExpression().pattern() == "S001"
     browser.shutdown()
@@ -172,7 +172,7 @@ def test_small_roots_filter_at_once(qtbot, tmp_path):
 def test_big_roots_filter_once_typing_pauses(qtbot, tmp_path, monkeypatch):
     browser = DatasetBrowser([DataRoot(name="600", path=_root_with(tmp_path, 3))])
     qtbot.addWidget(browser)
-    qtbot.waitUntil(lambda: browser.model.root_nodes()[0].children, timeout=5000)
+    qtbot.waitUntil(lambda: bool(browser.model.root_nodes()[0].children), timeout=5000)
     monkeypatch.setattr(browser, "FILTER_INSTANT_ROWS", 0)
     applied = []
     real = browser._proxy.setFilterRegularExpression

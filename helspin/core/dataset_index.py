@@ -310,6 +310,8 @@ class RootIndex:
     root: str
     built_at: float = 0.0
     truncated: bool = False
+    # The sample limit a truncated search stopped at (0: not recorded).
+    limit: int = 0
     # False while discovery is still running (or was interrupted). A partial
     # index is still worth caching: showing 300 known samples instantly and
     # finding the rest in the background beats showing nothing.
@@ -349,6 +351,7 @@ class RootIndex:
             "root": self.root,
             "built_at": self.built_at,
             "truncated": self.truncated,
+            "limit": self.limit,
             "complete": self.complete,
             "samples": [
                 {
@@ -370,6 +373,7 @@ class RootIndex:
                 root=data["root"],
                 built_at=float(data.get("built_at", 0.0)),
                 truncated=bool(data.get("truncated", False)),
+                limit=int(data.get("limit", 0) or 0),
                 complete=bool(data.get("complete", True))
                 and int(data.get("rule", 1)) >= DISCOVERY_RULE,
                 samples=[
@@ -856,8 +860,16 @@ def explain_cache(root, target) -> str:
             return f"In the cached index: yes ({sample.path})."
     when = time.strftime("%Y-%m-%d %H:%M", time.localtime(index.built_at)) \
         if index.built_at else "an earlier session"
-    extra = (f" The last search stopped at the {SAMPLE_LIMIT:,}-sample limit."
-             if index.truncated else "")
+    extra = ""
+    if index.truncated:
+        limit = f"{index.limit:,}-sample " if index.limit else ""
+        extra = (f" That search stopped at the {limit}limit of the version "
+                 f"then in use (now {SAMPLE_LIMIT:,}), and folders are searched "
+                 "in name order, so the last ones -- often the newest -- were "
+                 "not reached.")
+    if not index.complete:
+        extra += (" It is incomplete or from an older HelSpin, so the next "
+                  "start searches this root again by itself.")
     return ("In the cached index: NO. The explorer shows this root from its "
             f"last search ({when}); press Refresh (F5) to search again."
             + extra)

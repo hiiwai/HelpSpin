@@ -25,7 +25,7 @@ conda create -n helspin python=3.11 && conda activate helspin
 pip install -e ".[dev]"
 helspin              # launch
 helspin --version    # prints version, needs no display
-pytest               # 1392 tests
+pytest               # 1433 tests
 ```
 
 **Version discipline:** `pyproject.toml` is the single source of truth.
@@ -124,6 +124,10 @@ a local disk hides everything.
    `_SaveTask` leaves `_inflight` when written and drops its payload.
 8. **Big-root filtering waits for a pause in typing** (250 ms) above 5000
    sample rows; small roots filter at once.
+8b. **Samples are listed flat under their root**, so the filter must match
+   the folders between root and sample (`DatasetTreeModel.sample_folder`,
+   cached per row) -- typing a group folder like "ETHZ" found nothing until
+   0.9.19. The root's own path is never part of the match.
 9. **Limit and warnings.** `SAMPLE_LIMIT` = 100,000 samples per root (it was
    5000 until 0.9.15, then 20,000), read at run time. Reaching it -- or 90%
    of it -- warns once per root and session in a dialog, and a truncated

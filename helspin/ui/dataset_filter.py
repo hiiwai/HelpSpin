@@ -81,7 +81,10 @@ class DatasetFilterProxy(QSortFilterProxyModel):
         # be opened. Otherwise fall back to matching this row itself, which is
         # what makes a PULPROG query narrow within a sample.
         sample = node.parent
-        if sample is not None and needle in sample.display_name.lower():
+        if sample is not None and (
+            needle in sample.display_name.lower()
+            or needle in model.sample_folder(sample).lower()
+        ):
             return True
         if needle in node.display_name.lower():
             return True

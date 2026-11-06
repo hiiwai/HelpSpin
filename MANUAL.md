@@ -1,6 +1,6 @@
 # HelSpin — User Manual
 
-Version 0.9.18
+Version 0.9.19
 
 Compare Bruker NMR spectra and build publication figures.
 
@@ -61,9 +61,14 @@ twice, so a loop cannot hang the scan.
 
 ### The browser
 
-The left panel is the tree: root → sample → experiment. Type in the filter box
-to narrow by sample name or pulse programme; the filter reaches samples that
-have not been expanded yet.
+The left panel is the tree: root → sample → experiment. Samples are listed
+directly under their data root, whatever folders they sit in; hover over a
+sample to see its folder (e.g. `NMR600_2026/data/ETHZ/Shared/NRAS`).
+
+Type in the filter box to narrow by sample name, pulse programme, or any
+folder name between the data root and the sample — `ETHZ` shows every
+sample below an `ETHZ` folder, `Shared/NRAS` those below that one. The
+filter reaches samples that have not been expanded yet.
 
 The tree does **not** watch the filesystem. Network shares make that
 unreliable, so refreshing is explicit: right-click a node to refresh it, or

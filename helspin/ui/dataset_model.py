@@ -103,6 +103,9 @@ class Node:
     # path -> child Node, rebuilt whenever the child count changes. Purely a
     # lookup accelerator; every mutation of `children` clears it.
     child_map: dict | None = field(default=None, repr=False)
+    # SAMPLE rows: the folders between the data root and the sample
+    # ("data/ETHZ/Shared/NRAS"), cached for the filter and the tooltip.
+    folder_text: str | None = field(default=None, repr=False)
 
     @property
     def is_fetched(self) -> bool:
@@ -1023,6 +1026,11 @@ class DatasetTreeModel(QAbstractItemModel):
         """
         if needle in node.display_name.lower():
             return True
+        if needle in self.sample_folder(node).lower():
+            # The folders a sample sits in: the tree lists samples directly
+            # under their data root, so a group folder such as "ETHZ" is
+            # nowhere on screen and typing it used to find nothing at all.
+            return True
         entry = self.entry_for(node)
         if entry is not None:
             return needle in entry.haystack()
@@ -1032,6 +1040,24 @@ class DatasetTreeModel(QAbstractItemModel):
             if needle in child.meta_pulprog().lower():
                 return True
         return False
+
+    def sample_folder(self, node: Node) -> str:
+        """Folders between the data root and a sample: "data/ETHZ/Shared/NRAS".
+
+        Empty for a sample directly in the root, or for anything that is not
+        a sample row. Computed once per row.
+        """
+        if node.kind is not NodeKind.SAMPLE:
+            return ""
+        if node.folder_text is None:
+            root = _root_node(node)
+            try:
+                relative = Path(node.path).parent.relative_to(Path(root.path))
+                text = "" if str(relative) == "." else relative.as_posix()
+            except ValueError:          # outside the root (a followed link)
+                text = Path(node.path).parent.as_posix()
+            node.folder_text = text
+        return node.folder_text
 
     def root_matches(self, node: Node, needle: str) -> bool:
         if needle in node.display_name.lower():
@@ -1054,6 +1080,9 @@ class DatasetTreeModel(QAbstractItemModel):
         if role == Qt.ToolTipRole:
             if node.failed:
                 return node.error or "Could not read this location."
+            if node.kind is NodeKind.SAMPLE:
+                folder = self.sample_folder(node)
+                return f"{folder}/{node.display_name}" if folder else node.display_name
             if node.kind is NodeKind.DATA_ROOT and node.truncated:
                 return ("This folder holds more samples than HelSpin searches "
                         f"({index_store.SAMPLE_LIMIT}); later ones by name are "
@@ -1311,6 +1340,7 @@ class _DiscoverTask(QRunnable):
         # the limit and the "near the limit" check always agree.
         self._limit = index_store.SAMPLE_LIMIT if limit is None else limit
         self._use_cache = use_cache
+        self.walked = False      # True once the share is actually searched
         self.signals = _DiscoverSignals()
 
     def run(self) -> None:
@@ -1330,6 +1360,7 @@ class _DiscoverTask(QRunnable):
                     # once and then completed by a real walk, which re-reports
                     # the samples it already knows -- make_sample_nodes drops
                     # the duplicates.
+            self.walked = True
             paths, truncated = index_store.discover_samples(
                 node.path,
                 limit=self._limit,
@@ -1874,6 +1905,11 @@ class DatasetPopulator(QObject):
         if index is not None:
             index.truncated = truncated
             index.complete = complete
+            if complete and getattr(task, "walked", True):
+                # When the root was last searched -- what `helspin --why`
+                # reports -- and, if it stopped early, at which limit.
+                index.built_at = time.time()
+                index.limit = index_store.SAMPLE_LIMIT if truncated else 0
             self._model.mark_dirty(node.path)
             self._schedule_save()
         found = len(index.samples) if index else len(paths)
