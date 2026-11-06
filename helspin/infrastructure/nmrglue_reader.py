@@ -101,6 +101,36 @@ def _as_float(value, default: float = 1.0) -> float:
         return default
 
 
+def _untiled_2d(data, dic: dict, pdata_dir):
+    """A 2D spectrum nmrglue handed back FLAT, as (F1, F2) -- or a clear error.
+
+    nmrglue expects processed 2D data in XDIM-by-XDIM tiles. With XDIM = 0
+    (data written row by row, as for the reporter's SOFAST-HMQCs) it cannot
+    untile, warns "unable to reorder data" and returns one long array, which
+    HelSpin then refused as "not 2D" -- so such spectra never loaded, in any
+    version. Row-by-row data need no untiling: the right SIZE is all it takes.
+    A size that does not match SI(F1) x SI(F2) is an incomplete or foreign
+    file, and is said so.
+    """
+    from ..domain.errors import EmptySpectrum
+
+    f2, f1 = dic.get("procs", {}) or {}, dic.get("proc2s", {}) or {}
+    try:
+        si2, si1 = int(f2.get("SI", 0)), int(f1.get("SI", 0))
+    except (TypeError, ValueError):
+        si2 = si1 = 0
+    if si1 > 0 and si2 > 0 and data.size == si1 * si2:
+        return data.reshape(si1, si2)
+    rr = Path(pdata_dir) / "2rr"
+    size = rr.stat().st_size if rr.is_file() else 0
+    raise EmptySpectrum(
+        f"{pdata_dir}/2rr does not match its own size parameters "
+        f"({size:,} bytes for SI {si1} x {si2}, tiles XDIM "
+        f"{f1.get('XDIM')} x {f2.get('XDIM')}). The file may be incomplete "
+        "(copy still running?); reprocess or copy it again."
+    )
+
+
 def _strip_corrected(sw_hz: float, car_hz: float, proc: dict, size: int):
     """Correct sweep width and carrier for a TopSpin STSR/STSI strip.
 
@@ -474,24 +504,14 @@ class NmrglueReader:
 
         import warnings
 
-        with warnings.catch_warnings(record=True) as caught:
+        with warnings.catch_warnings(record=True):
+            # nmrglue warns "unable to reorder data" (printed on the
+            # terminal) for data it cannot untile -- handled below.
             warnings.simplefilter("always")
             dic, data = ng.bruker.read_pdata(str(pdata_dir))
-        if any("unable to reorder" in str(w.message) for w in caught):
-            # nmrglue only WARNS ("unable to reorder data", on the terminal)
-            # and hands back the tiles unsorted: a scrambled picture. Say
-            # what is wrong instead -- usually a 2rr cut short by an
-            # unfinished copy, or written by a different processing.
-            rr = pdata_dir / "2rr"
-            size = rr.stat().st_size if rr.is_file() else 0
-            f1, f2 = dic.get("proc2s", {}), dic.get("procs", {})
-            raise EmptySpectrum(
-                f"{pdata_dir}/2rr does not match its own size parameters "
-                f"({size:,} bytes for SI {f1.get('SI')} x {f2.get('SI')}, "
-                f"tiles XDIM {f1.get('XDIM')} x {f2.get('XDIM')}). "
-                "The file may be incomplete (copy still running?); reprocess "
-                "or copy it again."
-            )
+        data = np.asarray(data)
+        if data.ndim == 1:
+            data = _untiled_2d(data, dic, pdata_dir)
         data = np.asarray(data, dtype=np.float64)
         if data.ndim != 2:
             raise UnsupportedDimension(

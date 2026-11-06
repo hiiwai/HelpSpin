@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.24 - 2026-11-06 (test build -- not published until confirmed)
+
+### Fixed: 2D spectra stored row by row (XDIM = 0) never loaded
+
+Reported: experiment 10 (sf_mehmqcgp, SI 2048 x 512) greyed out and never
+shown, although `--check` found its 2rr. Its procs/proc2s have XDIM = 0: the
+data are stored row by row, not in TopSpin's usual tiles. nmrglue cannot
+untile that; it printed "unable to reorder data" on the terminal and returned
+one flat array, which HelSpin refused as "not 2D" -- in every version -- and
+0.9.23 then greyed the row as unreadable. Row-by-row data need no untiling:
+HelSpin now reshapes them by SI(F1) x SI(F2) when the file has exactly that
+many points, and explains (instead of drawing garbage) when it does not.
+
+1480 tests (up from 1478).
+
 ## 0.9.23 - 2026-11-06 (test build -- not published until confirmed)
 
 ### Fixed: the explorer showed out-of-date experiment states

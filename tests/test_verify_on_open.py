@@ -173,3 +173,56 @@ def test_a_cut_short_2rr_is_explained_not_drawn_scrambled(tmp_path):
     (pdata / "2rr").write_bytes(np.zeros(64 * 32 // 2, "<i4").tobytes())  # cut short
     with pytest.raises(EmptySpectrum, match="does not match its own size"):
         NmrglueReader().read_2d(expno)
+
+
+def _two_d(tmp_path, name, xdim2, xdim1, data, nbytes=None):
+    import numpy as np
+
+    expno = tmp_path / name
+    pdata = expno / "pdata" / "1"
+    pdata.mkdir(parents=True)
+    (expno / "acqus").write_text(
+        "##$NUC1= <1H>\n##$SFO1= 600.13\n##$BF1= 600.13\n##$SW_h= 6000\n##END=\n")
+    (expno / "acqu2s").write_text(
+        "##$NUC1= <15N>\n##$SFO1= 60.8\n##$BF1= 60.8\n##$SW_h= 2000\n##END=\n")
+    procs = ("##$SI= {si}\n##$XDIM= {x}\n##$SF= {sf}\n##$SW_p= {sw}\n"
+             "##$OFFSET= {off}\n##$BYTORDP= 0\n##$DTYPP= 0\n##$NC_proc= 0\n"
+             "##$STSI= 0\n##$STSR= 0\n##END=\n")
+    n1, n2 = data.shape
+    (pdata / "procs").write_text(procs.format(si=n2, x=xdim2, sf=600.13, sw=6000, off=10))
+    (pdata / "proc2s").write_text(procs.format(si=n1, x=xdim1, sf=60.8, sw=2000, off=130))
+    raw = np.asarray(data, "<i4").tobytes()
+    (pdata / "2rr").write_bytes(raw[:nbytes] if nbytes else raw)
+    return expno
+
+
+def test_row_by_row_2d_data_xdim_0_loads(tmp_path):
+    """The reporter's experiment 10: SI 2048 x 512, XDIM 0 in both
+    dimensions, 2rr exactly 4,194,304 bytes. nmrglue cannot untile it and
+    returns it flat; it never loaded in any version."""
+    import numpy as np
+
+    from helspin.infrastructure.nmrglue_reader import NmrglueReader
+
+    values = np.arange(64)[:, None] * 1000 + np.arange(256)[None, :]
+    flat = _two_d(tmp_path, "10", 0, 0, values)
+    # the same matrix as ONE full-size tile, which nmrglue does handle
+    tiled = _two_d(tmp_path, "11", 256, 64, values)
+    reader = NmrglueReader()
+    a, b = reader.read_2d(flat), reader.read_2d(tiled)
+    data_a = np.asarray(a.real)
+    data_b = np.asarray(b.real)
+    assert data_a.shape == (64, 256)
+    assert np.array_equal(data_a, data_b)
+
+
+def test_row_by_row_data_cut_short_is_still_explained(tmp_path):
+    import numpy as np
+
+    from helspin.domain.errors import EmptySpectrum
+    from helspin.infrastructure.nmrglue_reader import NmrglueReader
+
+    values = np.ones((64, 256))
+    expno = _two_d(tmp_path, "12", 0, 0, values, nbytes=64 * 256 * 2)
+    with pytest.raises(EmptySpectrum, match="does not match its own size"):
+        NmrglueReader().read_2d(expno)
