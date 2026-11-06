@@ -472,7 +472,26 @@ class NmrglueReader:
         if not pdata_dir.is_dir():
             raise DatasetNotFound(f"no pdata/{procno} under {path}")
 
-        dic, data = ng.bruker.read_pdata(str(pdata_dir))
+        import warnings
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            dic, data = ng.bruker.read_pdata(str(pdata_dir))
+        if any("unable to reorder" in str(w.message) for w in caught):
+            # nmrglue only WARNS ("unable to reorder data", on the terminal)
+            # and hands back the tiles unsorted: a scrambled picture. Say
+            # what is wrong instead -- usually a 2rr cut short by an
+            # unfinished copy, or written by a different processing.
+            rr = pdata_dir / "2rr"
+            size = rr.stat().st_size if rr.is_file() else 0
+            f1, f2 = dic.get("proc2s", {}), dic.get("procs", {})
+            raise EmptySpectrum(
+                f"{pdata_dir}/2rr does not match its own size parameters "
+                f"({size:,} bytes for SI {f1.get('SI')} x {f2.get('SI')}, "
+                f"tiles XDIM {f1.get('XDIM')} x {f2.get('XDIM')}). "
+                "The file may be incomplete (copy still running?); reprocess "
+                "or copy it again."
+            )
         data = np.asarray(data, dtype=np.float64)
         if data.ndim != 2:
             raise UnsupportedDimension(

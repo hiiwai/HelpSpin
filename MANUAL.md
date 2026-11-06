@@ -1,6 +1,6 @@
 # HelSpin — User Manual
 
-Version 0.9.22
+Version 0.9.23
 
 Compare Bruker NMR spectra and build publication figures.
 
@@ -76,6 +76,11 @@ unreliable, so refreshing is explicit: right-click a node to refresh it, or
 samples, and also looks inside known samples — expanded or not — for new
 experiments and for experiments processed since they were last seen. That
 second part runs in the background ("Indexing in background…").
+
+Opening a sample always checks its experiments against the disk: the rows
+appear at once from what HelSpin knew, then any experiment processed,
+deleted or copied in since is corrected within a moment (on a local disk,
+instantly). Greyed-out means "no processed spectrum on disk right now".
 
 At start-up HelSpin also re-checks, by itself, samples changed in the last
 two weeks that still have experiments in progress, so freshly processed

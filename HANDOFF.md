@@ -25,7 +25,7 @@ conda create -n helspin python=3.11 && conda activate helspin
 pip install -e ".[dev]"
 helspin              # launch
 helspin --version    # prints version, needs no display
-pytest               # 1447 tests
+pytest               # 1478 tests
 ```
 
 **Version discipline:** `pyproject.toml` is the single source of truth.
@@ -80,8 +80,9 @@ a local disk hides everything.
 **What a session costs, and must keep costing**
 
 - *Second and later sessions:* the cached index shows every root at once
-  (one local file read per root), opening any sample needs **no** network
-  access, and the background pass is **one stat per sample**. Nothing may
+  (one local file read per root), opening any sample SHOWS its rows with
+  **no** disk access, then checks them once in the background (one listing
+  per experiment, 0.9.23), and the start-up pass is **one stat per sample**. Nothing may
   re-walk a share at start-up.
 - *First session:* rows stream in batches as discovery finds them; the full
   experiment lists and metadata are read once, in the background, and
@@ -162,6 +163,12 @@ a local disk hides everything.
    must not drop rows. Without this, a volume needing more than one session
    to search restarted from the top every time and never reached its last
    folders.
+9d. **What is ON SCREEN is checked against the disk** (0.9.23). The index
+   answers instantly, but processing inside an experiment folder and
+   `rsync -a` (old dates) defeat every date-based staleness check, so
+   opening a sample runs `_VerifyTask` (re-list + `inspect_processed` per
+   experiment) and corrects the rows (`repaint_rows`). At most every 30 s
+   per sample. Never trust a cached has_processed for what the user sees.
 10. **Index rows are compact.** `ExpnoEntry`/`SampleEntry` use slots (a
     100,000-sample root holds about a million entries: ~190 MB with slots)
     and `from_row` decodes flags from a table.

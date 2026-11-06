@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.9.23 - 2026-11-06 (test build -- not published until confirmed)
+
+### Fixed: the explorer showed out-of-date experiment states
+
+Reported with `helspin --check` on the reporter's local copy: experiment 10
+had its processed 2D data (2rr) but was greyed out in the explorer, while 1
+and 2, whose 1r had been removed, were still offered. The explorer answered
+from its saved index, and nothing told it the data had changed: processing
+writes inside the experiment folder, and `rsync -a` gives copied folders
+their original (old) dates, so no date check -- not the start-up re-check,
+not Refresh's -- could notice.
+
+Now opening a sample shows the saved answer at once and then checks its
+experiments against the disk in the background: rows for data processed,
+copied in or deleted since are corrected (and repainted), new experiments
+appear, and the index is updated. The check is repeated at most every 30 s
+per sample, so opening and closing does not keep re-reading a share.
+
+### A cut-short 2rr is explained instead of drawn scrambled
+
+nmrglue only printed "unable to reorder data" on the terminal and returned
+the 2D tiles unsorted. HelSpin now says which 2rr does not match its own size
+parameters (usually an incomplete copy) instead of showing a garbled map.
+
+1478 tests (up from 1471).
+
 ## 0.9.22 - 2026-11-06 (test build -- not published until confirmed)
 
 ### Search over a slow share: one listing per sample

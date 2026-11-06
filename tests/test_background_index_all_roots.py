@@ -95,6 +95,9 @@ def test_the_next_session_reads_nothing_but_one_stat_per_sample(
 
 def test_opening_a_sample_in_any_root_needs_no_io_next_session(
         qtbot, tmp_path, monkeypatch):
+    """Rows appear from the index with no disk access; since 0.9.23 one
+    background check per opened sample follows (what is on screen must match
+    the disk), but no metadata is read again."""
     roots = build_roots(tmp_path)
     first = open_browser(qtbot, roots)
     qtbot.waitUntil(lambda: idle(first), timeout=15000)
@@ -103,13 +106,22 @@ def test_opening_a_sample_in_any_root_needs_no_io_next_session(
     second = open_browser(qtbot, roots)
     qtbot.waitUntil(lambda: idle(second), timeout=15000)
     model = second.model
-    with OpCounter(monkeypatch) as ops:
-        for root_node in model.root_nodes():          # the FIRST root too
-            sample = root_node.children[0]
-            second._request_populate(model._index_for(sample))
-            assert sample.children
-            assert all(not c.probe_pending for c in sample.children)
-    assert ops.total == 0
+    scans, metas = [], []
+    real_scan, real_meta = di.scan_expnos, dm.meta_values
+    monkeypatch.setattr(di, "scan_expnos", lambda p: scans.append(p) or real_scan(p))
+    monkeypatch.setattr(dm, "meta_values",
+                        lambda *a: metas.append(a) or real_meta(*a))
+    opened = []
+    for root_node in model.root_nodes():          # the FIRST root too
+        sample = root_node.children[0]
+        second._request_populate(model._index_for(sample))
+        # synchronously, before any background work: rows with metadata
+        assert sample.children
+        assert all(not c.probe_pending for c in sample.children)
+        opened.append(str(sample.path))
+    qtbot.waitUntil(lambda: idle(second), timeout=15000)
+    assert sorted(scans) == sorted(opened)        # one check per opened sample
+    assert metas == []
     second.shutdown()
 
 

@@ -106,6 +106,8 @@ class Node:
     # SAMPLE rows: the folders between the data root and the sample
     # ("data/ETHZ/Shared/NRAS"), cached for the filter and the tooltip.
     folder_text: str | None = field(default=None, repr=False)
+    # SAMPLE rows: when its experiments were last checked against the disk.
+    verified_at: float = field(default=0.0, repr=False)
 
     @property
     def is_fetched(self) -> bool:
@@ -762,6 +764,18 @@ class DatasetTreeModel(QAbstractItemModel):
             self.endInsertRows()
             node.child_map = None
         return fresh
+
+    def repaint_rows(self, node: Node) -> None:
+        """Tell the view every row under ``node`` may look different (a row
+        that became loadable, or stopped being, changes colour)."""
+        children = node.children or []
+        if not children:
+            return
+        parent = self._index_for(node)
+        first = self.index(0, 0, parent)
+        last = self.index(len(children) - 1, len(COLUMNS) - 1, parent)
+        if first.isValid() and last.isValid():
+            self.dataChanged.emit(first, last)
 
     def drop_missing_samples(self, root_node: Node, keep: set) -> None:
         """Remove sample rows whose directories are gone. GUI THREAD.
@@ -1422,6 +1436,46 @@ class _DetailTask(QRunnable):
         self.signals.done.emit(self, self.node, expnos)
 
 
+class _VerifySignals(QObject):
+    # task, node, [ExpnoEntry], {expno name: (processed?, note)}
+    done = Signal(object, object, list, dict)
+
+
+class _VerifyTask(QRunnable):
+    """Re-reads what an opened sample really holds: its experiment folders
+    and, for each, whether a processed spectrum is there.
+
+    The index answers instantly from what it learned before -- but that can
+    be out of date: data processed or copied in later (rsync -a keeps the
+    old folder dates, so nothing looks changed) stayed greyed out, and data
+    since deleted stayed offered. Reported: experiment 10 grey although its
+    2rr was there, 1 and 2 offered although their 1r was gone.
+    """
+
+    def __init__(self, node: Node, token: CancelToken):
+        super().__init__()
+        self.setAutoDelete(False)       # Python owns it; see _DetailTask
+        self.node = node
+        self._token = token
+        self.signals = _VerifySignals()
+
+    def run(self) -> None:
+        expnos: list = []
+        states: dict = {}
+        try:
+            if not self._token.stopped:
+                expnos = index_store.scan_expnos(str(self.node.path))
+                for entry in expnos:
+                    if self._token.stopped:
+                        break
+                    if entry.displayable:
+                        states[entry.name] = index_store.inspect_processed(
+                            Path(self.node.path) / entry.name)
+        except Exception:      # noqa: BLE001 -- keep what the index said
+            expnos, states = [], {}
+        self.signals.done.emit(self, self.node, expnos, states)
+
+
 class _MetaSignals(QObject):
     done = Signal(object, list)     # task, [(node, values dict)]
 
@@ -1843,12 +1897,57 @@ class DatasetPopulator(QObject):
             children = self._model.expno_nodes_for(node, entry)
             self._model.applyChildren(node, children)
             self._after_children(node, children)
+            # Shown at once from the index; then checked against the disk.
+            self.verify_sample(node)
             return
         task = _DetailTask(node, self._token)
         task.signals.done.connect(self._on_sample_detail)
         task.signals.failed.connect(self._on_failed)
         self._inflight.add(task)
         self._pool.start(task)
+
+    VERIFY_AGAIN_AFTER_S = 30.0
+
+    def verify_sample(self, node: Node, force: bool = False) -> None:
+        """Check an opened sample's experiments against the disk, quietly.
+
+        At most once per VERIFY_AGAIN_AFTER_S per sample (unless forced), so
+        opening and closing a sample repeatedly does not re-read a share.
+        """
+        if node.kind is not NodeKind.SAMPLE or self._token.stopped:
+            return
+        now = time.monotonic()
+        recent = now - node.verified_at < self.VERIFY_AGAIN_AFTER_S
+        if not force and node.verified_at and recent:
+            return
+        node.verified_at = now
+        task = _VerifyTask(node, self._token)
+        task.signals.done.connect(self._on_verified)
+        self._inflight.add(task)
+        self._pool.start(task)
+
+    def _on_verified(self, task, node: Node, expnos: list, states: dict) -> None:
+        if not self._alive:
+            return
+        self._inflight.discard(task)
+        if not expnos or not self._model.is_live(node):
+            return
+        entry = self._model.entry_for(node)
+        if entry is None:
+            return
+        self._model.merge_expnos(entry, expnos, str(node.path))
+        for expno in entry.expnos:
+            state = states.get(expno.name)
+            if state is None or state[0] is None:
+                continue                # could not tell: keep what was known
+            expno.has_processed, expno.processed_note = state
+        entry.invalidate()
+        node.entry = entry
+        new_rows = self._model.merge_sample_children(node)
+        self._model.repaint_rows(node)
+        self._model.mark_dirty(_root_node(node).path)
+        self._schedule_save()
+        self.probe_rows(new_rows)
 
     def _apply_root_index(self, node: Node, index) -> None:
         self._model.install_index(node.path, index)
@@ -1964,6 +2063,11 @@ class DatasetPopulator(QObject):
         self._model.applyChildren(node, children)
         self._schedule_save()
         self._after_children(node, children)
+        # Experiments whose details were carried over from the index (and so
+        # will not be probed again) are checked against the disk too.
+        entry = self._model.entry_for(node)
+        if entry is not None and any(e.meta for e in entry.expnos):
+            self.verify_sample(node)
 
     def _on_sample_refreshed(self, task, node: Node, expnos: list) -> None:
         """A refreshed sample MERGES: rows keep their identity, so expansion
