@@ -91,7 +91,14 @@ a local disk hides everything.
 
 1. **Cache first.** `_DiscoverTask` loads the on-disk index before touching
    the share; a complete index means no walk. Only Refresh re-walks.
-2. **Tiered work.** Discovery = ONE listing per folder (`classify`: the same
+2. **Tiered work.** Discovery = ONE listing per sample (0.9.22): a folder of
+   experiment-like numbers and files is a sample on its own listing
+   (`is_sample_listing`, shared with `--why`); only ambiguous folders are
+   probed. No `is_dir()`/`is_symlink()` per entry -- folders are found by
+   listing them, file-like names (FILE_EXTENSIONS) are never tried, and
+   link checks run only before descending into a non-sample. On the
+   reporter's share requests are serialised, so parallelism does not help
+   and only the request count matters. Before 0.9.22: ONE listing per folder (`classify`: the same
    listing decides "sample?" and gives the folders below -- never list a
    folder twice), plus one listing of a numbered subfolder to confirm it is
    an EXPERIMENT, found by NAME (never `is_dir()` per experiment: on shares

@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.9.22 - 2026-11-06 (test build -- not published until confirmed)
+
+### Search over a slow share: one listing per sample
+
+Measured on the reporting machine with 0.9.21: macOS's own `find` listed
+2184 folders of NMR600_2026 in 20 s (~9 ms each), while HelSpin managed 10
+samples/s -- about ten network requests per sample, with parallel requests
+gaining nothing on that share. Per sample the search had: asked the sample's
+entry in its parent "are you a folder?", "are you a link?", listed the
+sample, and listed its first experiment.
+
+Now a sample costs ONE listing in the common case:
+
+- A folder holding experiment-like numbers (and files) is a sample on its
+  own listing; no experiment inside it is opened. Only ambiguous folders --
+  numbers beside named folders, or only year-like numbers -- are looked
+  into, so a "2026" or "600" beside real folders still cannot hide them.
+- No entry is asked its type. Folders are found by listing them; names that
+  are clearly files (`.zip`, `.pdf`, ...) are never tried, and listing an
+  other file fails at once.
+- Link checks are made only before going into a folder that is not a
+  sample, never for the samples themselves.
+
+Model of that share (requests one at a time, 3 round trips per listing,
+entry types not reported): 8.5 -> 3.4 round trips per sample, 35 -> 95
+samples/s. Where parallel requests do help: 481 -> 166 round trips.
+
+On a local disk: 10,000 samples (800,000 files) found in 0.25 s (0.9.21:
+0.55 s). The library defaults for the sample limit were still 5000 in two
+places; they now follow SAMPLE_LIMIT.
+
+`helspin --scan` now measures what one folder listing costs on the share
+(the earlier "one request takes ~0 ms" timed a cached request) and whether
+several at once are faster, and reports folders listed per sample.
+
+1471 tests (up from 1463).
+
 ## 0.9.21 - 2026-11-06 (test build -- not published until confirmed)
 
 ### Faster search over network shares

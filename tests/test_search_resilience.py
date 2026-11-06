@@ -94,12 +94,20 @@ def odd_share(monkeypatch):
 
 def test_an_unreadable_entry_hides_only_itself(tmp_path, odd_share):
     root = volume(tmp_path)
-    odd_share["bad_dir"].add("AAA_restricted")      # beside ETHZ in data/
+    odd_share["fail_dirs"]["AAA_restricted"] = 99   # beside ETHZ in data/
     problems = []
     found, _ = di.discover_samples(root, workers=8, problems=problems)
     assert str(root / SAMPLE) in found
-    assert any("AAA_restricted" in p and "PermissionError" in e
-               for p, e in problems)
+    assert any("AAA_restricted" in p and "OSError" in e for p, e in problems)
+
+
+def test_an_entry_type_error_cannot_hide_its_siblings(tmp_path, odd_share):
+    """The search no longer asks entries their type at all, so a type
+    check that fails (PermissionError) cannot empty a folder's listing."""
+    root = volume(tmp_path)
+    odd_share["bad_dir"].update({"AAA_restricted", "ETHZ", "data"})
+    found, _ = di.discover_samples(root, workers=8)
+    assert str(root / SAMPLE) in found
 
 
 def test_an_entry_whose_link_state_cannot_be_read_is_still_searched(tmp_path,
@@ -178,7 +186,7 @@ def test_numbered_subfolders_keep_what_they_could_read(tmp_path, odd_share):
 def test_the_explorer_finds_it_and_reports_skipped_folders(qtbot, tmp_path,
                                                            odd_share):
     root = volume(tmp_path)
-    odd_share["bad_dir"].add("AAA_restricted")
+    odd_share["fail_dirs"]["AAA_restricted"] = 99
     browser = DatasetBrowser([DataRoot(name="600", path=root)])
     qtbot.addWidget(browser)
     messages = []
@@ -228,7 +236,7 @@ def test_why_reports_links(tmp_path):
 
 def test_scan_report(tmp_path, odd_share):
     root = volume(tmp_path)
-    odd_share["bad_dir"].add("AAA_restricted")
+    odd_share["fail_dirs"]["AAA_restricted"] = 99
     lines = []
     seen = []
     n = di.scan_report(root, find=root / SAMPLE / "5" / "pdata" / "1",
@@ -420,8 +428,90 @@ def test_experiment_folders_are_never_type_checked(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "scandir", scandir)
     found, _ = di.discover_samples(root, workers=8)
     assert len(found) == 6
-    # Type checks only for the folders above the samples (vol: 1, nmr: 6).
-    assert counter["is_dir"] <= 1 + 6
-    # Each folder listed ONCE (vol, nmr, 6 samples), plus one experiment per
-    # sample looked into.
-    assert counter["scandir"] <= 2 + 6 + 6
+    # No entry is asked its type (0.9.22): the folders are found by listing.
+    assert counter["is_dir"] == 0
+    # Each folder listed ONCE (vol, nmr, 6 samples). A sample of experiment
+    # numbers is recognised on its own listing: no experiment is opened.
+    assert counter["scandir"] <= 2 + 6
+
+
+# ------------------------------------------- 0.9.22: one listing per sample
+
+
+def _count_listings(monkeypatch):
+    seen = []
+    real = os.scandir
+
+    def scandir(path="."):
+        seen.append(os.fspath(path))
+        return real(path)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    return seen
+
+
+def test_files_by_name_are_never_listed(tmp_path, monkeypatch):
+    root = tmp_path / "vol"
+    make_expno(root / "NRAS" / "S1", 1)
+    (root / "NRAS" / "20260821_NRAS_Hideo_Hari_700.zip").write_bytes(b"PK")
+    (root / "notes.pdf").write_bytes(b"%PDF")
+    seen = _count_listings(monkeypatch)
+    found, _ = di.discover_samples(root)
+    assert found == [str(root / "NRAS" / "S1")]
+    assert not any(p.endswith((".zip", ".pdf")) for p in seen)
+
+
+def test_a_file_without_an_extension_is_tried_once_and_skipped(tmp_path):
+    root = tmp_path / "vol"
+    make_expno(root / "S1", 1)
+    (root / "README").write_text("x")
+    problems = []
+    found, _ = di.discover_samples(root, problems=problems)
+    assert found == [str(root / "S1")] and problems == []
+
+
+def test_a_sample_with_a_named_subfolder_is_still_a_sample(tmp_path):
+    sample = tmp_path / "vol" / "S"
+    make_expno(sample, 1)
+    (sample / "analysis").mkdir()
+    stats = {}
+    found, _ = di.discover_samples(tmp_path / "vol", stats=stats)
+    assert found == [str(sample)] and stats["probes"] == 1
+
+
+def test_a_plain_sample_opens_no_experiment(tmp_path):
+    sample = tmp_path / "vol" / "S"
+    for e in (1, 2, 10):
+        make_expno(sample, e)
+    stats = {}
+    found, _ = di.discover_samples(tmp_path / "vol", stats=stats)
+    assert found == [str(sample)] and stats["probes"] == 0
+    assert stats["listings"] == 2           # the root, the sample
+
+
+def test_a_linked_sample_is_found(tmp_path):
+    elsewhere = tmp_path / "elsewhere" / "S"
+    make_expno(elsewhere, 1)
+    root = tmp_path / "vol"
+    root.mkdir()
+    os.symlink(elsewhere, root / "S_link")
+    assert di.discover_samples(root)[0] == [str(root / "S_link")]
+
+
+def test_why_follows_the_same_rule_as_the_search(tmp_path):
+    root = tmp_path / "vol"
+    (root / "S" / "1").mkdir(parents=True)        # numbers only: a sample
+    (root / "S" / "2").mkdir()
+    assert di.discover_samples(root)[0] == [str(root / "S")]
+    assert "SAMPLE -- found" in "\n".join(di.explain_path(root, root / "S"))
+
+
+def test_scan_reports_listing_cost(tmp_path):
+    root = tmp_path / "vol"
+    for name in ("a", "b", "c", "d", "e", "f"):
+        make_expno(root / name / "S", 1)
+    lines = []
+    di.scan_report(root, out=lines.append)
+    text = "\n".join(lines)
+    assert "Listing one folder on this share takes" in text
+    assert "per sample" in text and "experiments opened" in text

@@ -601,6 +601,60 @@ def _link_identity(entry):
         return None
 
 
+# Entries whose names say "file": never listed as folders. On shares that do
+# not report entry types, asking "is this a folder?" is a network round trip
+# per entry; the search instead tries to list each remaining entry, which for
+# a folder is the listing it needs anyway and for a file fails at once.
+FILE_EXTENSIONS = frozenset("""  # noqa: SIM905 -- easier to read as words
+    zip gz tgz bz2 xz 7z rar tar dmg iso pdf txt rtf csv tsv log dat out xml
+    json html htm md png jpg jpeg gif tif tiff bmp svg eps ps mov mp4 avi xls
+    xlsx doc docx ppt pptx key numbers pages odt ods mat h5 hdf5 npy npz py sh
+    bat exe msi pkg app mnova ft ft2 ucsf sparky nv par
+""".split())
+
+
+def _looks_like_file(name: str) -> bool:
+    stem, dot, extension = name.rpartition(".")
+    return bool(dot and stem and extension.lower() in FILE_EXTENSIONS)
+
+
+def _expno_like(numbered: list) -> bool:
+    """Numbers an experiment folder would have (1, 2, 10, 101...), as
+    opposed to a year (2026) or a large instrument-style number."""
+    return any(int(n) < 1000 for n in numbered)
+
+
+def is_sample_listing(path: str, names, on_probe=None) -> bool:
+    """The search's sample rule, given the names a folder's listing holds.
+
+    A folder of experiment-like numbers (and files) is a sample on its
+    listing alone. Only an AMBIGUOUS one -- numbers beside named entries, or
+    only year-like numbers -- has its lowest numbered folders looked into.
+    One rule, shared by the search and by `helspin --why`.
+    """
+    numbered = [n for n in names if is_number_name(n)]
+    if not numbered:
+        return False
+    named = [n for n in names
+             if not is_number_name(n) and not n.startswith(".")
+             and not _looks_like_file(n)]
+    if not named and _expno_like(numbered):
+        return True
+    if on_probe is not None:
+        on_probe()
+    return numbered_names_hold_experiments(path, numbered)
+
+
+def search_sees_sample(path: str) -> bool:
+    """is_sample_listing for a folder, listing it first."""
+    try:
+        with os.scandir(path) as entries:
+            names = [e.name for e in entries]
+    except OSError:
+        return False
+    return is_sample_listing(path, names)
+
+
 # Folders a search could not read, kept with the index and shown by
 # `helspin --why` / `--scan`. Capped: a volume full of them says enough at 200.
 MAX_PROBLEMS = 200
@@ -654,7 +708,7 @@ def _has_integer_child_dir(path: str) -> bool:
 
 def discover_samples(
     root,
-    limit: int = 5000,
+    limit: int | None = None,
     on_batch=None,
     should_stop=None,
     depth: int = MAX_DEPTH,
@@ -662,6 +716,7 @@ def discover_samples(
     workers: int = 1,
     problems: list | None = None,
     resume_after: str | None = None,
+    stats: dict | None = None,
 ) -> tuple[list[str], bool]:
     """Find sample directories under ``root``. Returns (paths, truncated).
 
@@ -687,6 +742,8 @@ def discover_samples(
     wholly before it are not even listed, and only its ancestors are walked
     through. The result is the tail a full search would have produced.
     """
+    if limit is None:
+        limit = SAMPLE_LIMIT        # never a stale hard-coded default
     root = str(root)
     found: list[str] = []
     pending: list[str] = []
@@ -721,33 +778,27 @@ def discover_samples(
         root_real = root
 
     pool = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
-    # A second pool for entry type checks inside one listing. Where a share
-    # does not report entry types each is_dir() is a round trip; done one
-    # after another, a folder of 200 sample folders cost 200 sequential round
-    # trips. (Separate from `pool`: classify() already runs there, and
-    # waiting on the same pool from inside it can deadlock.)
-    type_pool = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
-
-    def is_folder(entry) -> bool:
-        try:
-            return entry.is_dir()
-        except OSError as exc:
-            _note(problems, entry.path, exc)
-            return False
     # Checked a chunk at a time, so a cancel or the limit is noticed within
     # one chunk rather than after a directory of ten thousand children.
     chunk = max(1, workers * 4)
+    counts = stats if stats is not None else {}
+    for key in ("listings", "probes"):
+        counts.setdefault(key, 0)
+    NOT_A_FOLDER = object()
 
-    def listing(path: str) -> list:
-        """All entries of one folder, read ONCE. A failed read is retried
-        once (shares hiccup); then whatever was read is kept and the
-        failure recorded."""
+    def listing(path: str):
+        """All entries of one folder, read ONCE -- or NOT_A_FOLDER for a
+        file. A failed read is retried once (shares hiccup); then whatever
+        was read is kept and the failure recorded."""
         entries: list = []
         for attempt in (1, 2):
             entries = []
             try:
+                counts["listings"] += 1
                 with os.scandir(path) as it:
                     entries.extend(it)
+            except NotADirectoryError:
+                return NOT_A_FOLDER
             except OSError as exc:
                 if attempt == 2:
                     _note(problems, path, exc)
@@ -756,60 +807,60 @@ def discover_samples(
         return entries
 
     def classify(path: str):
-        """(is_sample, subfolders) from ONE listing of ``path``.
+        """(is_sample, entries below) from ONE listing of ``path``.
 
-        Each folder is listed exactly once: deciding "is it a sample?" and
-        "what is below it?" used to be two listings of every folder that was
-        not a sample. And a sample's own entries are never type-checked --
-        only its lowest numbered names are looked into.
+        Costs, per folder, exactly one listing in the common case:
+
+        * a folder whose entries are experiment-like numbers and files is a
+          sample on its listing alone -- no folder inside it is opened;
+        * only an AMBIGUOUS folder -- numbers next to named entries, or only
+          year-like numbers -- has its lowest numbered folders looked into,
+          so a "2026" or a "600" beside real folders can never hide them;
+        * no entry is asked "are you a folder?" (a round trip each where a
+          share does not report types): the names that may be folders are
+          returned, and listing one that is a file simply fails.
+
+        Returns (False, None) for something that is not a folder at all.
         """
         try:
             entries = listing(path)
-            numbered = [e.name for e in entries if is_number_name(e.name)]
-            if numbered and numbered_names_hold_experiments(path, numbered):
+            if entries is NOT_A_FOLDER:
+                return False, None
+            def probed():
+                counts["probes"] += 1
+
+            if is_sample_listing(path, [e.name for e in entries], probed):
                 return True, None
-            if type_pool is not None and len(entries) > 1:
-                flags = list(type_pool.map(is_folder, entries))
-            else:
-                flags = [is_folder(e) for e in entries]
-            subfolders = [e for e, f in zip(entries, flags, strict=True) if f]
-            subfolders.sort(key=lambda e: e.name)
-            return False, subfolders
+            below = [e for e in entries
+                     if not e.name.startswith(".")
+                     and not _looks_like_file(e.name)]
+            below.sort(key=lambda e: e.name)
+            return False, below
         except Exception as exc:      # noqa: BLE001 -- one folder, not the search
             _note(problems, path, exc)
             return False, []
 
-    def candidates(subfolders: list) -> list:
-        out = []
-        for child in subfolders:
-            if child.name == "pdata":
-                continue
-            try:
-                is_link = child.is_symlink()
-            except OSError as exc:
-                _note(problems, child.path, exc)
-                is_link = False
-            # is_symlink() is free -- it comes from the directory read. Only
-            # inside this branch is a stat paid for.
-            if is_link:
-                identity = _link_identity(child)
-                if identity is None:
-                    continue        # broken link: nothing to descend into
-                if identity in seen_links:
-                    continue        # this target has already been followed
-                seen_links.add(identity)
-                try:
-                    target = os.path.realpath(child.path)
-                except OSError:
-                    continue
-                # Pointing back inside the root: a loop, or a second name for
-                # something the walk reaches anyway. Skipping it is what
-                # bounds a self-referential link, and it costs one resolve
-                # per link rather than one per sample.
-                if target == root_real or target.startswith(root_real + os.sep):
-                    continue
-            out.append(child)
-        return out
+    def may_descend(child) -> bool:
+        """Link checks, made only before going INTO a folder that is not a
+        sample -- never for the (many) samples themselves."""
+        try:
+            is_link = child.is_symlink()
+        except OSError as exc:
+            _note(problems, child.path, exc)
+            return True
+        if not is_link:
+            return True
+        identity = _link_identity(child)
+        if identity is None or identity in seen_links:
+            return False            # broken, or this target already followed
+        seen_links.add(identity)
+        try:
+            target = os.path.realpath(child.path)
+        except OSError:
+            return False
+        # Pointing back inside the root: a loop, or a second name for
+        # something the walk reaches anyway.
+        return not (target == root_real or target.startswith(root_real + os.sep))
 
     resume: tuple | None = None
     if resume_after:
@@ -825,7 +876,7 @@ def discover_samples(
             return True
         if stopped():
             return False
-        children = candidates(subfolders)
+        children = [c for c in subfolders if c.name != "pdata"]
         through = None              # an ancestor of the resume point
         if resume is not None:
             todo = []
@@ -840,7 +891,7 @@ def discover_samples(
                     continue        # (or it IS the resume point: known)
                 todo.append(child)
             children = todo
-            if through is not None:
+            if through is not None and may_descend(through):
                 _sample, below = classify(through.path)
                 if not walk(below or [], remaining - 1,
                             parts + (through.name,)):
@@ -863,6 +914,8 @@ def discover_samples(
                 if is_sample:
                     emit(child.path)
                     continue    # a sample is a leaf for this purpose
+                if below is None or not may_descend(child):
+                    continue    # a file, or a link not to follow
                 try:
                     if not walk(below or [], remaining - 1,
                                 parts + (child.name,)):
@@ -881,8 +934,6 @@ def discover_samples(
     finally:
         if pool is not None:
             pool.shutdown(wait=True)
-        if type_pool is not None:
-            type_pool.shutdown(wait=True)
     flush()
     # Cancellation is not truncation: the caller asked to stop, and saying
     # "your root is too big" for that would be a lie shown in the status bar.
@@ -890,7 +941,7 @@ def discover_samples(
     return found, truncated
 
 
-def build_index(root, limit: int = 5000, progress=None) -> RootIndex:
+def build_index(root, limit: int | None = None, progress=None) -> RootIndex:
     """Walk a data root once and record every sample and experiment.
 
     The eager, all-tiers-at-once build. The application no longer calls this
@@ -937,7 +988,7 @@ def explain_path(root, target) -> list[str]:
     if not root.is_dir():
         return [f"The data root {root} is not reachable (unmounted share?)."]
     lines = [f"Data root: {root}"]
-    if is_sample_dir(str(root)):
+    if search_sees_sample(str(root)):
         return lines + ["The data root itself is a sample (it holds numbered "
                         "experiment folders), so it is the only sample shown."]
     try:
@@ -990,7 +1041,7 @@ def explain_path(root, target) -> list[str]:
                              f"(to {real}); searched under that real path "
                              "instead.")
                 break
-        if is_sample_dir(str(folder)):
+        if search_sees_sample(str(folder)):
             numbers = [e.name for e in numbered_subfolders(str(folder))]
             lines.append(f"  {shown}: SAMPLE -- found (experiments "
                          f"{', '.join(numbers[:8])}"
@@ -1051,18 +1102,44 @@ def scan_report(root, find=None, out=print, progress=None) -> int:
     """
     root = Path(root).expanduser()
     problems: list = []
-    # How long one request to the share takes -- what every listing costs.
-    timings = []
-    for _ in range(5):
+    # What one LISTING of a folder costs on this share, and whether several
+    # at once are faster -- the two numbers that decide how fast any search
+    # can be. (A stat of the root, used before, is cached by the OS: ~0 ms.)
+    def timed_listing(path):
         tick = time.perf_counter()
         try:
-            os.stat(root)
+            with os.scandir(path) as entries:
+                for _ in entries:
+                    pass
         except OSError:
-            break
-        timings.append(time.perf_counter() - tick)
-    if timings:
-        typical = sorted(timings)[len(timings) // 2] * 1000
-        out(f"One request to this share takes ~{typical:.0f} ms.")
+            return None
+        return time.perf_counter() - tick
+
+    try:
+        with os.scandir(root) as entries:
+            probes = [e.path for e in entries
+                      if not e.name.startswith(".") and not _looks_like_file(e.name)]
+    except OSError:
+        probes = []
+    one = [t for t in (timed_listing(p) for p in probes[:4]) if t is not None]
+    if one:
+        each = sorted(one)[len(one) // 2]
+        out(f"Listing one folder on this share takes ~{each * 1000:.0f} ms.")
+        batch = probes[4:8]
+        if len(batch) >= 2 and each > 0.002:
+            tick = time.perf_counter()
+            with ThreadPoolExecutor(max_workers=len(batch)) as together:
+                list(together.map(timed_listing, batch))
+            took = time.perf_counter() - tick
+            speedup = each * len(batch) / took if took > 0 else 1.0
+            if speedup < 1.5:
+                out(f"{len(batch)} listings at once: no faster -- this share answers "
+                    "one request at a time, so a search costs about "
+                    f"{each * 1000:.0f} ms per folder whatever HelSpin does.")
+            else:
+                out(f"{len(batch)} listings at once: {speedup:.1f}x faster than one "
+                    "after another.")
+    stats: dict = {}
     started = time.monotonic()
     count = [0]
 
@@ -1073,13 +1150,17 @@ def scan_report(root, find=None, out=print, progress=None) -> int:
 
     paths, truncated = discover_samples(
         root, limit=SAMPLE_LIMIT, on_batch=on_batch,
-        workers=DISCOVER_WORKERS, problems=problems,
+        workers=DISCOVER_WORKERS, problems=problems, stats=stats,
     )
     took = time.monotonic() - started
     rate = len(paths) / took if took > 0 else 0.0
     out(f"Searched {root} in {took:.0f} s ({rate:.0f} samples/s): {len(paths):,} samples"
         + (f" -- STOPPED at the {SAMPLE_LIMIT:,}-sample limit" if truncated else "")
         + ".")
+    if paths:
+        out(f"Folders listed: {stats.get('listings', 0):,} "
+            f"({stats.get('listings', 0) / len(paths):.1f} per sample); "
+            f"experiments opened to confirm a sample: {stats.get('probes', 0):,}.")
     by_top: dict = {}
     for path in paths:
         try:
