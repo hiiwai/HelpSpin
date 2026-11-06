@@ -367,8 +367,15 @@ QT_ENABLE_HIGHDPI_SCALING=1 helspin
 QT_SCALE_FACTOR=1.5 helspin          # or set it manually
 ```
 
-**A sample is missing from the tree.** Ask HelSpin what it sees on disk rather
-than guessing:
+**A sample is missing from the tree.** Ask HelSpin why, rather than guessing:
+
+```
+helspin --why /mnt/nmr/THE-SAMPLE
+```
+
+That retraces the explorer's search from the data root to the sample and
+says where and why it stops, and whether the sample is in the saved index
+(if not: Refresh, F5). Then
 
 ```
 helspin --check /mnt/nmr/THE-SAMPLE

@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.9.18 - 2026-11-06
+
+### Fixed: whole folders of data not found
+
+Reported: no data at all found under the data root NMR600_2026, for samples
+like `NMR600_2026/data/ETHZ/Shared/NRAS/20260821_NRAS_Hideo_Hari_700`. Any
+folder containing a numbered subfolder was taken for a sample, and the search
+never looks inside a sample -- so one numbered folder that is NOT an
+experiment (a year such as `2026`, an instrument such as `600`, a `1`) next to
+real folders made its parent a "sample" and hid everything below it.
+
+A folder is now a sample only if its numbered subfolders hold experiment
+files (`acqus`, `fid`, `ser`, `pdata`, ...); the lowest-numbered three are
+looked at, so an aborted first experiment does not matter. This costs one
+more listing per sample during a search; discovery now runs 16 checks at a
+time instead of 8, so it takes the same time as before (measured: 600
+samples, 4 ms per operation, 0.40 s either way).
+
+Data roots searched under the old rule are searched again, once, at the next
+start: the rows appear at once from the saved index, and wrongly detected
+"samples" are replaced by what is really below them when the search finishes.
+Experiment lists and metadata already read are kept.
+
+### Added: `helspin --why PATH`
+
+Explains, from a terminal, why the explorer does or does not show the data
+at PATH (a sample or any folder below it, e.g. `.../5/pdata/1`): it retraces
+the search from the data root level by level -- searched, sample, too deep,
+a link back into the root, a pdata folder -- and says whether the sample is
+in the explorer's saved index (if not, Refresh). `--root` names the data
+root; otherwise the ones set in HelSpin are used.
+
+1420 tests (up from 1392).
+
 ## 0.9.17 - 2026-11-06
 
 ### Data roots of up to 100,000 samples

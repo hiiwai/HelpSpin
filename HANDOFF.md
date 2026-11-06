@@ -91,13 +91,21 @@ a local disk hides everything.
 
 1. **Cache first.** `_DiscoverTask` loads the on-disk index before touching
    the share; a complete index means no walk. Only Refresh re-walks.
-2. **Tiered work.** Discovery = one listing per folder, stopping at the first
-   numbered subfolder (`_has_integer_child_dir`); experiment lists only for
+2. **Tiered work.** Discovery = one listing per folder, plus one listing of
+   a numbered subfolder to confirm it is an EXPERIMENT
+   (`domain.paths.holds_experiments`, 0.9.18); experiment lists only for
    opened samples or by the background indexer; metadata = one `acqus` read
    per row (`probe_row`), never `probe()` with its nine round trips.
-3. **Parallel discovery, serial order.** `discover_samples(workers=8)`
+   **A numbered folder alone never makes a sample**: a "2026" or "600"
+   beside real folders hid whole subtrees until 0.9.18 ("no data at all
+   under NMR600_2026"). `helspin --why PATH` retraces the search.
+3. **Parallel discovery, serial order.** `discover_samples(workers=16)`
    checks a folder's children concurrently but reports them in sorted,
-   depth-first order. Never one round trip at a time again.
+   depth-first order. Never one round trip at a time again. (16 since the
+   experiment check doubled the round trips per sample: same wall time.)
+   A cache written under an older sample rule (`DISCOVERY_RULE`) loads as
+   incomplete, so the root is searched again once and corrected; only a
+   complete, untruncated walk (or a refresh) removes rows.
 4. **Every root is indexed.** One shared background queue for all roots
    (`_bg_queue` of (root, job)); never a single "current root" whose queue a
    newly started root replaces (0.9.15). Removing a root cancels only its

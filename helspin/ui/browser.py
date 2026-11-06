@@ -237,7 +237,8 @@ class DatasetBrowser(QWidget):
         self.statusChanged.emit(
             f"No Bruker samples found under {root} "
             f"(searched {MAX_DEPTH} folder levels down). A sample is any "
-            "folder containing numbered experiment folders \u2014 point "
+            "folder containing numbered experiment folders (with acqus, fid, "
+            "ser or pdata inside) \u2014 point "
             "HelSpin at a folder above those."
         )
 

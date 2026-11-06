@@ -999,7 +999,43 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
              "exit. Answers 'why is this row dimmed?' from the shell, "
              "without a window and without guessing.",
     )
+    parser.add_argument(
+        "--why",
+        metavar="PATH",
+        help="explain why the explorer does or does not show the data at "
+             "PATH (a sample, an experiment, or any folder below it), and "
+             "exit. Uses the data roots set in HelSpin, or --root.",
+    )
+    parser.add_argument(
+        "--root",
+        metavar="ROOT",
+        help="with --why: the data root to search from",
+    )
     return parser.parse_args(argv)
+
+
+def explain_dataset(target, root=None) -> int:
+    """--why: retrace the explorer's search from the data root to ``target``."""
+    from .core.dataset_index import explain_cache, explain_path
+
+    target = Path(target).expanduser()
+    if root is None:
+        roots = [Path(r.path) for r in load_data_roots()]
+        inside = [r for r in roots
+                  if target == r or str(target).startswith(str(r).rstrip("/\\")
+                                                           + os.sep)]
+        if not inside:
+            print(f"{target} is not inside any data root set in HelSpin.")
+            for r in roots:
+                print(f"  data root: {r}")
+            print("Add a data root above it, or pass --root.")
+            return 2
+        root = max(inside, key=lambda r: len(str(r)))
+    root = Path(root).expanduser()
+    for line in explain_path(root, target):
+        print(line)
+    print(explain_cache(root, target))
+    return 0
 
 
 def check_datasets(target) -> int:
@@ -1098,6 +1134,8 @@ def main() -> int:
     args = _parse_args(sys.argv[1:])
     if getattr(args, "check", None):
         return check_datasets(args.check)
+    if args.why:
+        return explain_dataset(args.why, args.root)
     if args.version:
         # Deliberately no QApplication here: this must work even on a
         # machine with no display at all, e.g. over SSH, purely to answer

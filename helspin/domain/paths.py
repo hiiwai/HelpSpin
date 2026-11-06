@@ -320,19 +320,65 @@ def parse_topspin_identifier(text: str) -> TopSpinIdentifier | None:
 # --- fast sample discovery ---------------------------------------------------
 
 
+# What an experiment folder holds, any one of which is enough to say "this
+# numbered folder is a Bruker experiment" rather than a year, an instrument
+# or a project number.
+EXPERIMENT_MARKERS = frozenset(
+    ("acqus", "acqu", "fid", "ser", "pdata", "audita.txt", "pulseprogram")
+)
+
+# Numbered folders looked into before deciding a folder is NOT a sample. More
+# than one, because the first experiment of a real sample can be an aborted
+# one with nothing in it.
+SAMPLE_PROBES = 3
+
+
+def looks_like_experiment(path: str) -> bool:
+    """One listing: does this folder hold any Bruker experiment file?"""
+    try:
+        with os.scandir(path) as entries:
+            return any(e.name in EXPERIMENT_MARKERS for e in entries)
+    except OSError:
+        return False
+
+
+def numbered_subfolders(path: str) -> list:
+    """Integer-named subfolders, lowest number first (symlinks followed: an
+    expno reached through a link is still an expno). [] if unreadable."""
+    try:
+        with os.scandir(path) as entries:
+            found = [e for e in entries if e.name.isdigit() and e.is_dir()]
+    except OSError:
+        return []
+    return sorted(found, key=lambda e: int(e.name))
+
+
+def holds_experiments(path: str) -> bool:
+    """Is this folder a Bruker sample: does it hold numbered EXPERIMENTS?
+
+    Until 0.9.18 any numbered subfolder made a folder a sample, and the
+    search never looks inside a sample -- so a folder that merely held a
+    "2026", a "600" or a "1" next to its real contents hid everything below
+    it. Reported as "no data at all under NMR600_2026". Now a numbered
+    subfolder counts only if it holds an experiment file; the lowest-numbered
+    few are looked at. Cost: one more listing per sample, during a search.
+    """
+    return any(
+        looks_like_experiment(entry.path)
+        for entry in numbered_subfolders(path)[:SAMPLE_PROBES]
+    )
+
+
 def _has_integer_child_dir(entry_path: str) -> bool:
     """True if this directory holds at least one integer-named subdirectory.
 
-    Stops at the FIRST match. Identifying a sample does not require knowing
-    how many expnos it has, and enumerating them all was the main cost of the
-    old scan.
+    The OLD sample rule, kept only for scan_for_samples below, which the
+    application no longer uses (the explorer finds samples with
+    core.dataset_index.discover_samples and holds_experiments).
     """
     try:
         with os.scandir(entry_path) as entries:
             for child in entries:
-                # Symlinks followed: an expno reached through a link is
-                # still an expno, and excluding it stopped the parent from
-                # registering as a sample at all.
                 if child.name.isdigit() and child.is_dir():
                     return True
     except OSError:

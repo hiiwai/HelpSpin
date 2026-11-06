@@ -53,9 +53,18 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..domain.paths import holds_experiments as is_sample_dir
+
 # 2: expno entries gained structural flags and cached metadata. An older
 # cache is simply ignored and rebuilt -- it holds nothing worth migrating.
 INDEX_FORMAT = 2
+
+# Which rule found the samples in a cached index. 2 (0.9.18): a sample holds
+# numbered EXPERIMENT folders. An index from an earlier rule is still loaded
+# -- its experiment lists and metadata are valid -- but counts as incomplete,
+# so the root is searched again once and wrongly detected "samples" (a folder
+# that merely held a "2026") are replaced by what is really below them.
+DISCOVERY_RULE = 2
 
 # A root deeper than this is almost certainly a wrong directory choice rather
 # than a real layout; bounded so a mistake cannot walk a whole filesystem.
@@ -85,7 +94,7 @@ NEAR_LIMIT_FRACTION = 0.9
 # Directory checks run in parallel during discovery. On a share every check
 # is a round trip, and they are independent, so this divides the time to find
 # all samples by roughly this number; on a local disk it changes nothing.
-DISCOVER_WORKERS = 8
+DISCOVER_WORKERS = 16
 
 # A sample changed within this long is re-listed at start-up if it has any
 # experiment still in progress (see SampleEntry.unsettled), even though its
@@ -336,6 +345,7 @@ class RootIndex:
     def to_dict(self) -> dict:
         return {
             "format": INDEX_FORMAT,
+            "rule": DISCOVERY_RULE,
             "root": self.root,
             "built_at": self.built_at,
             "truncated": self.truncated,
@@ -360,7 +370,8 @@ class RootIndex:
                 root=data["root"],
                 built_at=float(data.get("built_at", 0.0)),
                 truncated=bool(data.get("truncated", False)),
-                complete=bool(data.get("complete", True)),
+                complete=bool(data.get("complete", True))
+                and int(data.get("rule", 1)) >= DISCOVERY_RULE,
                 samples=[
                     SampleEntry(
                         path=s["path"],
@@ -598,23 +609,8 @@ def _sub_directories(directory: str):
 
 
 def _has_integer_child_dir(path: str) -> bool:
-    """True if this directory holds at least one integer-named subdirectory.
-
-    Stops at the FIRST match: identifying a sample does not require knowing
-    how many experiments it has, and enumerating them all is what made
-    discovery cost a round trip per experiment instead of one per directory.
-    """
-    try:
-        with os.scandir(path) as entries:
-            for child in entries:
-                # follow_symlinks left at its default (True): an expno
-                # directory reached through a symlink is still an expno, and
-                # excluding it made the parent fail to register as a sample.
-                if child.name.isdigit() and child.is_dir():
-                    return True
-    except OSError:
-        return False
-    return False
+    """Kept for callers of the old name: now the experiment-based rule."""
+    return is_sample_dir(path)
 
 
 def discover_samples(
@@ -717,10 +713,10 @@ def discover_samples(
             part = children[start:start + chunk]
             if pool is not None and len(part) > 1:
                 verdicts = list(pool.map(
-                    _has_integer_child_dir, [c.path for c in part]
+                    is_sample_dir, [c.path for c in part]
                 ))
             else:
-                verdicts = [_has_integer_child_dir(c.path) for c in part]
+                verdicts = [is_sample_dir(c.path) for c in part]
             for child, is_sample in zip(part, verdicts, strict=True):
                 if len(found) >= limit:
                     return False
@@ -734,7 +730,7 @@ def discover_samples(
         return True
 
     try:
-        if _has_integer_child_dir(root):
+        if is_sample_dir(root):
             emit(root)
             flush()
             return found, False
@@ -775,6 +771,96 @@ def build_index(root, limit: int = 5000, progress=None) -> RootIndex:
     index.truncated = truncated
     index.complete = not truncated
     return index
+
+
+def explain_path(root, target) -> list[str]:
+    """Why the explorer does or does not find ``target`` under ``root``.
+
+    Retraces the search from the root down to the target folder by folder,
+    with the explorer's own rules, and says at each step what it decided --
+    so "I cannot find my data" gets a definite answer instead of a guess.
+    Costs a couple of listings per level; it never walks the whole root.
+    """
+    from ..domain.paths import numbered_subfolders
+
+    root = Path(root).expanduser()
+    target = Path(target).expanduser()
+    try:
+        parts = target.relative_to(root).parts
+    except ValueError:
+        return [f"{target} is not inside the data root {root}."]
+    if not root.is_dir():
+        return [f"The data root {root} is not reachable (unmounted share?)."]
+    lines = [f"Data root: {root}"]
+    if is_sample_dir(str(root)):
+        return lines + ["The data root itself is a sample (it holds numbered "
+                        "experiment folders), so it is the only sample shown."]
+    try:
+        root_real = os.path.realpath(root)
+    except OSError:
+        root_real = str(root)
+    current = root
+    for level, part in enumerate(parts, start=1):
+        folder = current / part
+        shown = "/".join(parts[:level])
+        if part == "pdata":
+            lines.append(f"  {shown}: a pdata folder; never searched.")
+            break
+        if level > MAX_DEPTH + 1:
+            lines.append(f"  {shown}: NOT SEARCHED -- deeper than {MAX_DEPTH} "
+                         "folder levels below the data root. Add a folder "
+                         "further in as the data root.")
+            break
+        if not folder.is_dir():
+            lines.append(f"  {shown}: not a folder, or not readable.")
+            break
+        if folder.is_symlink():
+            try:
+                real = os.path.realpath(folder)
+            except OSError:
+                real = "?"
+            if real == root_real or real.startswith(root_real + os.sep):
+                lines.append(f"  {shown}: a link back inside the data root "
+                             f"(to {real}); searched under that real path "
+                             "instead.")
+                break
+        if is_sample_dir(str(folder)):
+            numbers = [e.name for e in numbered_subfolders(str(folder))]
+            lines.append(f"  {shown}: SAMPLE -- found (experiments "
+                         f"{', '.join(numbers[:8])}"
+                         f"{', ...' if len(numbers) > 8 else ''}).")
+            if level < len(parts) and not parts[level].isdigit():
+                lines.append(f"  The search does not look inside a sample, so "
+                             f"'{parts[level]}' below it is never reached.")
+            return lines
+        numbered = [e.name for e in numbered_subfolders(str(folder))]
+        note = (f" (its numbered folders {', '.join(numbered[:5])} hold no "
+                "experiment files, so it is not a sample)" if numbered else "")
+        lines.append(f"  {shown}: folder, searched{note}.")
+        current = folder
+    else:
+        lines.append(f"  {target} holds no numbered experiment folders, so it "
+                     "is not a sample.")
+        return lines
+    return lines
+
+
+def explain_cache(root, target) -> str:
+    """What the explorer's cached index says about ``target``'s sample."""
+    index = load_index(root)
+    if index is None:
+        return "No cached index for this root yet: the next start searches it."
+    target = str(Path(target).expanduser())
+    for sample in index.samples:
+        if target == sample.path or target.startswith(sample.path + os.sep):
+            return f"In the cached index: yes ({sample.path})."
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(index.built_at)) \
+        if index.built_at else "an earlier session"
+    extra = (f" The last search stopped at the {SAMPLE_LIMIT:,}-sample limit."
+             if index.truncated else "")
+    return ("In the cached index: NO. The explorer shows this root from its "
+            f"last search ({when}); press Refresh (F5) to search again."
+            + extra)
 
 
 # --- on-disk cache -----------------------------------------------------------

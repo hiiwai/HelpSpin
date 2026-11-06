@@ -1858,10 +1858,13 @@ class DatasetPopulator(QObject):
         if node.children is None:
             self._model.applyChildren(node, [])
         node.fetch_in_flight = False
-        if was_refresh and complete:
-            # Only a refresh may remove rows: a cancelled or partial walk
-            # saying "I did not see it" is not the same as it being gone.
+        if complete and (was_refresh or not truncated):
+            # Only a COMPLETE walk may remove rows: a cancelled or truncated
+            # one saying "I did not see it" is not the same as it being gone.
+            # (A walk after a partial or outdated cache counts too: that is
+            # how wrongly detected samples from before 0.9.18 disappear.)
             self._model.drop_missing_samples(node, {str(p) for p in paths})
+        if was_refresh and complete:
             # And a refresh must reach INSIDE known samples too: new
             # experiments, and experiments processed since they were indexed
             # (which change nothing a folder-level date can see). Started now,

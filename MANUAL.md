@@ -1,6 +1,6 @@
 # HelSpin — User Manual
 
-Version 0.9.17
+Version 0.9.18
 
 Compare Bruker NMR spectra and build publication figures.
 
@@ -47,7 +47,10 @@ library (`libxcb-cursor0`) before the first run.
 **File → Add Data Root…**, then pick the folder your datasets sit under. Point
 it at a directory that *contains* sample folders, not at a single dataset.
 HelSpin walks down looking for the Bruker structure (a sample folder holding
-numbered experiment folders) and shows what it finds.
+numbered experiment folders -- numbered folders with `acqus`, `fid`, `ser`
+or `pdata` in them) and shows what it finds. Other numbered folders, such as
+a year (`2026`) or an instrument (`600`), are searched through, not taken
+for samples.
 
 You can add more than one root — a network share and a local archive, say —
 and they persist between sessions.
@@ -326,7 +329,18 @@ Deleting the cache is safe; it is rebuilt on the next scan.
 
 ## 12. Troubleshooting
 
-**A sample is missing from the tree.** Run `helspin --check /path/to/SAMPLE`.
+**A sample is missing from the tree.** Ask HelSpin why, from a terminal:
+
+```
+helspin --why /path/to/SAMPLE
+```
+
+It retraces the explorer's search from your data root to that folder, says
+at each level what it decided (searched, a sample, too deep, a link...), and
+whether the sample is in the explorer's saved index -- if not, press
+Refresh (F5). Any folder below the sample works too, e.g. `.../5/pdata/1`.
+`helspin --check /path/to/SAMPLE` then reports, experiment by experiment,
+whether a plottable spectrum is there.
 Note that Bruker writes `acqus`, `pdata` and `1r` in lower case and Linux
 filesystems are case-sensitive, so data copied from Windows by a tool that
 changed case will not be recognised.
