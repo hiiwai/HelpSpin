@@ -226,3 +226,61 @@ def test_row_by_row_data_cut_short_is_still_explained(tmp_path):
     expno = _two_d(tmp_path, "12", 0, 0, values, nbytes=64 * 256 * 2)
     with pytest.raises(EmptySpectrum, match="does not match its own size"):
         NmrglueReader().read_2d(expno)
+
+
+# ------------------------------------------------- a failed load is not forever
+
+
+def _open_and_fail(qtbot, root, sample, name):
+    browser = DatasetBrowser([DataRoot(name="L2026", path=root)])
+    qtbot.addWidget(browser)
+    node = browser.model.root_nodes()[0]
+    qtbot.waitUntil(lambda: bool(node.children) and idle(browser), timeout=10000)
+    s = node.children[0]
+    browser._request_populate(browser.model._index_for(s))
+    qtbot.waitUntil(lambda: bool(s.children) and idle(browser), timeout=10000)
+    # what a drop that failed does (e.g. dragged while TopSpin was writing)
+    assert browser.mark_dataset_failed(str(sample / name), "2rr does not match")
+    row = next(c for c in s.children if c.display_name == name)
+    assert row.failed and not row.loadable or row.failed
+    return browser, s, row
+
+
+def test_refresh_all_clears_a_failed_load_once_the_data_is_complete(qtbot, tmp_path):
+    """Reported: 20 and 21 stayed grey after Refresh although --check found
+    complete 2rr/2ri/2ir/2ii -- processed minutes earlier."""
+    root = tmp_path / "nmr"
+    sample = root / "261023_11uMLSD1_KDM1A_300uMFOXA1_Me1"
+    make_expno(sample, 20, dim=2)
+    first_session(qtbot, root)
+    browser, s, row = _open_and_fail(qtbot, root, sample, "20")
+    browser.refresh_all()
+    qtbot.waitUntil(lambda: idle(browser) and not browser._populator._refreshing,
+                    timeout=10000)
+    assert not row.failed and row.loadable
+    browser.shutdown()
+
+
+def test_reopening_later_also_clears_it(qtbot, tmp_path):
+    root = tmp_path / "nmr"
+    sample = root / "S"
+    make_expno(sample, 21, dim=2)
+    first_session(qtbot, root)
+    browser, s, row = _open_and_fail(qtbot, root, sample, "21")
+    browser._populator.verify_sample(s, force=True)   # as after 30 s
+    qtbot.waitUntil(lambda: idle(browser), timeout=10000)
+    assert not row.failed and row.loadable
+    browser.shutdown()
+
+
+def test_a_failure_with_no_data_stays_grey(qtbot, tmp_path):
+    root = tmp_path / "nmr"
+    sample = root / "S"
+    exp = make_expno(sample, 22, dim=2)
+    first_session(qtbot, root)
+    browser, s, row = _open_and_fail(qtbot, root, sample, "22")
+    (exp / "pdata" / "1" / "2rr").unlink()
+    browser._populator.verify_sample(s, force=True)
+    qtbot.waitUntil(lambda: idle(browser), timeout=10000)
+    assert not row.loadable                       # no 2rr: grey, correctly
+    browser.shutdown()

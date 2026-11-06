@@ -25,7 +25,7 @@ conda create -n helspin python=3.11 && conda activate helspin
 pip install -e ".[dev]"
 helspin              # launch
 helspin --version    # prints version, needs no display
-pytest               # 1480 tests
+pytest               # 1483 tests
 ```
 
 **Version discipline:** `pyproject.toml` is the single source of truth.
@@ -163,6 +163,10 @@ a local disk hides everything.
    must not drop rows. Without this, a volume needing more than one session
    to search restarted from the top every time and never reached its last
    folders.
+9f. **A failed load is not forever** (0.9.25): `mark_expno_failed` greys a
+   row; a disk check that finds the data present clears it
+   (`clear_resolved_failures`). Refresh All forces that check on every open
+   sample.
 9e. **2D with XDIM = 0 is row-by-row data**: nmrglue returns it flat with
    a warning; `_untiled_2d` reshapes it by SI(F1) x SI(F2) when the size
    matches (0.9.24). Never treat nmrglue's "unable to reorder" as fatal.

@@ -765,6 +765,18 @@ class DatasetTreeModel(QAbstractItemModel):
             node.child_map = None
         return fresh
 
+    def clear_resolved_failures(self, node: Node) -> None:
+        """Un-grey rows whose failure is resolved: processed data present and
+        no error recorded on the (freshly checked) entry. A row that fails
+        again on the next drop is simply marked again."""
+        for row in node.children or []:
+            entry = row.entry
+            if (row.failed and entry is not None
+                    and getattr(entry, "has_processed", None) is True
+                    and not getattr(entry, "error", "")):
+                row.failed = False
+                row.error = ""
+
     def repaint_rows(self, node: Node) -> None:
         """Tell the view every row under ``node`` may look different (a row
         that became loadable, or stopped being, changes colour)."""
@@ -1941,9 +1953,16 @@ class DatasetPopulator(QObject):
             if state is None or state[0] is None:
                 continue                # could not tell: keep what was known
             expno.has_processed, expno.processed_note = state
+            if state[0]:
+                # Data are there now: an earlier FAILED LOAD (dragged while
+                # TopSpin was still writing it, say) is history. It used to
+                # stay recorded -- and the row grey -- for the whole session,
+                # through Refresh and re-opening alike.
+                expno.error = ""
         entry.invalidate()
         node.entry = entry
         new_rows = self._model.merge_sample_children(node)
+        self._model.clear_resolved_failures(node)
         self._model.repaint_rows(node)
         self._model.mark_dirty(_root_node(node).path)
         self._schedule_save()
@@ -2082,6 +2101,9 @@ class DatasetPopulator(QObject):
         self._schedule_save()
         self.probe_rows(new_children)
         self.populated.emit(node)
+        # A refresh the user asked for: check processed data now, whatever
+        # was checked a moment ago -- this is what clears grey rows.
+        self.verify_sample(node, force=True)
 
     EAGER_ROWS = 16
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.25 - 2026-11-06 (test build -- not published until confirmed)
+
+### Fixed: a row greyed by a failed load stayed grey for good
+
+Reported: experiments 20 and 21 stayed grey after Refresh All, although
+`helspin --check` found complete 2rr/2ri/2ir/2ii (processed minutes earlier).
+Dropping an experiment that cannot be loaded greys its row with the reason --
+for example while TopSpin is still writing it. That mark was never cleared:
+not by Refresh All, not by re-opening the sample, only by restarting.
+
+Now when a check of the disk finds the processed data present, the failure
+is cleared and the row is usable again (it is marked again if the next drop
+fails). Refresh All re-checks every open sample at once, regardless of when
+it was last checked.
+
+1483 tests (up from 1480).
+
 ## 0.9.24 - 2026-11-06 (test build -- not published until confirmed)
 
 ### Fixed: 2D spectra stored row by row (XDIM = 0) never loaded
