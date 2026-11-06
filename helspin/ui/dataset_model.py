@@ -765,6 +765,19 @@ class DatasetTreeModel(QAbstractItemModel):
             node.child_map = None
         return fresh
 
+    def clear_failure(self, node: Node) -> None:
+        """A later success read this node: drop its failure mark (and show
+        that). Every place that marks a failure has a success that calls
+        this -- tests/test_failure_marks.py holds each one to it."""
+        if not node.failed and not node.error:
+            return
+        node.failed = False
+        node.error = ""
+        index = self._index_for(node)
+        if index.isValid():
+            self.dataChanged.emit(index, self.createIndex(index.row(),
+                                                          len(COLUMNS) - 1, node))
+
     def clear_resolved_failures(self, node: Node) -> None:
         """Un-grey rows whose failure is resolved: processed data present and
         no error recorded on the (freshly checked) entry. A row that fails
@@ -1948,11 +1961,14 @@ class DatasetPopulator(QObject):
         if entry is None:
             return
         self._model.merge_expnos(entry, expnos, str(node.path))
+        reread = set()
         for expno in entry.expnos:
             state = states.get(expno.name)
             if state is None or state[0] is None:
                 continue                # could not tell: keep what was known
             expno.has_processed, expno.processed_note = state
+            if state[0] and expno.error:
+                reread.add(expno.name)  # its details must be read again
             if state[0]:
                 # Data are there now: an earlier FAILED LOAD (dragged while
                 # TopSpin was still writing it, say) is history. It used to
@@ -1963,6 +1979,17 @@ class DatasetPopulator(QObject):
         node.entry = entry
         new_rows = self._model.merge_sample_children(node)
         self._model.clear_resolved_failures(node)
+        # Rows still failed although their data is there failed on READING
+        # METADATA (acqus mid-acquisition, a share hiccup). That read happens
+        # once per row, so read it again now rather than keep the row grey.
+        retry = [row for row in node.children or []
+                 if row.entry is not None
+                 and getattr(row.entry, "has_processed", None) is True
+                 and (row.failed or row.display_name in reread)]
+        for row in retry:
+            row.probe_pending = True
+            row.probe_in_flight = False
+        new_rows = list(new_rows) + retry
         self._model.repaint_rows(node)
         self._model.mark_dirty(_root_node(node).path)
         self._schedule_save()
@@ -2026,6 +2053,10 @@ class DatasetPopulator(QObject):
         if node.children is None:
             self._model.applyChildren(node, [])
         node.fetch_in_flight = False
+        if complete:
+            # A search that got through clears an earlier failure (a share
+            # that was down): failure marks never outlive a success.
+            self._model.clear_failure(node)
         # A resumed walk saw only the tail: it may not remove rows.
         resumed = bool(getattr(task, "resumed", False))
         if complete and (was_refresh or not (truncated or resumed)):
@@ -2098,6 +2129,7 @@ class DatasetPopulator(QObject):
             return
         self._model.apply_sample_detail(node, expnos)
         new_children = self._model.merge_sample_children(node)
+        self._model.clear_failure(node)
         self._schedule_save()
         self.probe_rows(new_children)
         self.populated.emit(node)
@@ -2126,11 +2158,16 @@ class DatasetPopulator(QObject):
         self._refreshing.discard(id(node))
         if not self._model.is_live(node):
             return
-        node.failed = True
-        node.error = message
         node.fetch_in_flight = False
         if node.children is None:
             self._model.applyChildren(node, [])
+        # Set AFTER applyChildren, which resets the failure state: the other
+        # order lost a first-time failure at once, so its reason never showed.
+        node.failed = True
+        node.error = message
+        index = self._model._index_for(node)
+        if index.isValid():
+            self._model.dataChanged.emit(index, index)
         self._model.scanFailed.emit(str(node.path), message)
 
     # -- metadata ------------------------------------------------------------

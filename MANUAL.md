@@ -1,6 +1,6 @@
 # HelSpin — User Manual
 
-Version 0.9.25
+Version 0.9.26
 
 Compare Bruker NMR spectra and build publication figures.
 

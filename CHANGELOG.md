@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.9.26 - 2026-11-06 (test build -- not published until confirmed)
+
+### No failure mark outlives a success -- audit of every failure state
+
+After 0.9.25 (a failed drop kept a row grey for good) every place in the
+explorer that can mark something as failed was checked. Found and fixed:
+
+- A data root that failed once (share not mounted) stayed marked failed after
+  a later successful search.
+- A sample whose refresh failed once stayed marked after a later good one.
+- The opposite: a root or sample that failed BEFORE it was ever listed lost
+  its failure mark at once, so its reason was never shown.
+- A row whose details (acqus) could not be read -- mid-acquisition, a share
+  hiccup -- was read once and never again; it stayed grey with empty columns.
+  The next disk check (opening the sample, Refresh All) now reads it again.
+
+New guard, tests/test_failure_marks.py: for every place that marks a
+failure, a test that the mark is shown and that a later success clears it --
+plus a test that counts those places in the code, so a new one cannot be
+added without its own test.
+
+1492 tests (up from 1483).
+
 ## 0.9.25 - 2026-11-06 (test build -- not published until confirmed)
 
 ### Fixed: a row greyed by a failed load stayed grey for good
