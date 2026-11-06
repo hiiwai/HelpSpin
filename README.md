@@ -37,8 +37,8 @@ Two limits worth knowing:
 - **Eight folder levels below the root.** Deeper samples are not found. The cap
   exists so that mistakenly adding `C:\` cannot walk the whole disk. If your
   layout is deeper than that, add a folder further in.
-- **20000 samples.** Beyond that the scan stops and the data root's row
-  says so; point at a more specific folder.
+- **100,000 samples.** Beyond that the scan stops, the data root's row says
+  so and a dialog warns (also at 90%); point at a more specific folder.
 
 Cost scales with the number of *folders visited*, not experiments, so a root
 one or two levels above your samples is much faster than one near the drive

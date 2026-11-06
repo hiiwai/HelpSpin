@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.9.17 - 2026-11-06
+
+### Data roots of up to 100,000 samples
+
+The per-root limit is now 100,000 samples (20,000 in 0.9.16). Reaching it --
+or coming within 10% of it -- now shows a warning dialog, once per root and
+session, besides the note on the root's row: at the limit the newest data
+is what goes missing, so it should not pass unnoticed.
+
+Raising the limit costs smaller roots nothing; every cost scales with the
+samples actually present. Before raising it, the costs of a 100,000-sample
+root were measured, and three that grew faster than the root were fixed:
+
+- Streaming discovered samples into the tree rebuilt a lookup of every row
+  for each batch of 40 -- quadratic: 19 s of frozen window at 100,000
+  samples, 0.85 s at 20,000. Now 1.4 s and 0.26 s.
+- While indexing, the cache was serialised on the GUI thread every 4 s
+  (1.6 s each at 100,000). Saves are now spaced by how long they take, so
+  serialising stays under ~5% of the time; small roots still save every 4 s.
+- Each filter keystroke re-tested every sample (0.65 s at 100,000). Above
+  5000 samples the filter now applies once typing pauses (250 ms).
+
+Index entries use less memory (slots: ~190 MB for 100,000 samples x 10
+experiments) and load faster.
+
+### Fast finding, written down
+
+HANDOFF.md gains "Fast finding -- keep in EVERY version": the rules that keep
+the explorer fast (cache first, tiered and parallel discovery, every root
+indexed, Refresh reaching inside samples, no per-batch cost that grows with
+the root, paced saves, the limit and its warnings), each tied to the tests
+that guard it.
+
+1392 tests (up from 1375).
+
 ## 0.9.16 - 2026-11-04
 
 ### Fixed: Refresh did not show what is on disk

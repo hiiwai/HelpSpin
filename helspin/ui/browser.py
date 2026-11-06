@@ -143,6 +143,9 @@ class DatasetBrowser(QWidget):
     """
 
     scanFailed = Signal(str, str)
+    # A data root reached (True) or nearly reached (False) the sample limit;
+    # the window turns this into a one-time warning.
+    sampleLimit = Signal(str, int, bool)   # root path, samples, reached
     dataRootRemoved = Signal()
     statusChanged = Signal(str)      # one line for the window's status bar
 
@@ -165,6 +168,13 @@ class DatasetBrowser(QWidget):
         self._filter_edit = QLineEdit()
         self._filter_edit.setPlaceholderText("Filter by sample name or PULPROG\u2026")
         self._filter_edit.textChanged.connect(self._on_filter_changed)
+        # Typing into the filter re-tests every sample row. On a big root
+        # that is ~0.7 s per pass at 100,000 samples, so keystrokes are
+        # gathered and applied once the typing pauses (small roots: at once).
+        self._filter_timer = QTimer(self)
+        self._filter_timer.setSingleShot(True)
+        self._filter_timer.setInterval(self.FILTER_PAUSE_MS)
+        self._filter_timer.timeout.connect(self._apply_filter)
 
         self._tree = DatasetTreeView()
         self._tree.setModel(self._proxy)
@@ -180,6 +190,9 @@ class DatasetBrowser(QWidget):
 
         self._model.scanFailed.connect(self.scanFailed)
         self._model.scanTruncated.connect(self._on_truncated)
+        self._model.nearLimit.connect(
+            lambda path, found: self.sampleLimit.emit(path, found, False)
+        )
         self._populator.populated.connect(self._on_populated)
         self._populator.discovering.connect(self._on_discovering)
         self._populator.rootEmpty.connect(self._on_root_empty)
@@ -235,6 +248,7 @@ class DatasetBrowser(QWidget):
         self.statusChanged.emit(f"Indexing in background\u2026 {done}/{total} samples")
 
     def _on_truncated(self, path: str, kept: int) -> None:
+        self.sampleLimit.emit(path, kept, True)
         self.statusChanged.emit(
             f"Showing the first {kept} samples of {path} \u2014 "
             "point HelSpin at a more specific folder to see the rest."
@@ -361,7 +375,21 @@ class DatasetBrowser(QWidget):
         node.fetch_in_flight = True
         self._populator.populate(node)
 
+    FILTER_PAUSE_MS = 250
+    FILTER_INSTANT_ROWS = 5000
+
+    def _sample_row_count(self) -> int:
+        return sum(len(n.children or []) for n in self._model.root_nodes())
+
     def _on_filter_changed(self, text: str) -> None:
+        if self._sample_row_count() < self.FILTER_INSTANT_ROWS:
+            self._filter_timer.stop()
+            self._apply_filter()
+        else:
+            self._filter_timer.start()
+
+    def _apply_filter(self) -> None:
+        text = self._filter_edit.text()
         self._proxy.setFilterRegularExpression(QRegularExpression(text))
         # See DatasetFilterProxy's docstring / the module's known-limitation
         # test: matching only reaches already-fetched nodes. Data roots are

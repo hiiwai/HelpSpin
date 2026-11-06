@@ -1,6 +1,6 @@
 # HelSpin — User Manual
 
-Version 0.9.16
+Version 0.9.17
 
 Compare Bruker NMR spectra and build publication figures.
 
@@ -73,8 +73,10 @@ At start-up HelSpin also re-checks, by itself, samples changed in the last
 two weeks that still have experiments in progress, so freshly processed
 data usually appears without a refresh.
 
-A data root holding more than 20000 samples is cut off at that point, and
-its row says so; add a more specific folder instead.
+A data root holding more than 100,000 samples is cut off at that point: its
+row says so, and HelSpin warns once in a dialog -- also when a root comes
+within 10% of the limit. Add a more specific folder as its own data root
+instead.
 
 ### Opening spectra
 

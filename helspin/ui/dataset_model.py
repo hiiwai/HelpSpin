@@ -220,6 +220,7 @@ class DatasetTreeModel(QAbstractItemModel):
 
     scanFailed = Signal(str, str)      # path, error message -- for a status bar
     scanTruncated = Signal(str, int)   # path, how many samples were kept
+    nearLimit = Signal(str, int)       # path, samples found (>= 90% of limit)
 
     def __init__(self, data_roots: list[DataRoot], reader=None, parent=None):
         super().__init__(parent)
@@ -589,9 +590,16 @@ class DatasetTreeModel(QAbstractItemModel):
             return
         index = self._index_for(node)
         start = len(node.children)
+        current = (node.child_map is not None
+                   and len(node.child_map) == len(node.children))
         self.beginInsertRows(index, start, start + len(children) - 1)
         node.children.extend(children)
-        node.child_map = None
+        if current:
+            # Extend the map rather than drop it: discovery appends a batch
+            # at a time, and a dropped map is rebuilt from EVERY row.
+            node.child_map.update((str(c.path), c) for c in children)
+        else:
+            node.child_map = None
         self.endInsertRows()
 
     # -- building rows from the index ---------------------------------------
@@ -608,7 +616,11 @@ class DatasetTreeModel(QAbstractItemModel):
             idx = index_store.RootIndex(root=str(root_node.path))
             self.install_index(root_node.path, idx)
 
-        known = {str(c.path) for c in (root_node.children or [])}
+        # The root's path -> row map, kept up to date by appendChildren. It
+        # used to be rebuilt from every row here, once per batch of 40: fine at
+        # 5000 samples, 19 s of frozen GUI at 100,000.
+        known = self.child_map_of(root_node)
+        fresh: set = set()
         out: list[Node] = []
         for path in paths:
             key = str(path)
@@ -616,8 +628,9 @@ class DatasetTreeModel(QAbstractItemModel):
             if entry is None:
                 entry = index_store.SampleEntry(path=key)
                 idx.add(entry)
-            if key in known:
+            if key in known or key in fresh:
                 continue
+            fresh.add(key)
             out.append(
                 Node(
                     kind=NodeKind.SAMPLE,
@@ -775,12 +788,16 @@ class DatasetTreeModel(QAbstractItemModel):
         linear scan of 5000 sample rows each time is the kind of quiet
         quadratic cost that only shows up on the roots that matter.
         """
-        children = parent.children
-        if not children:
+        if not parent.children:
             return None
+        return self.child_map_of(parent).get(str(path))
+
+    def child_map_of(self, parent: Node) -> dict:
+        """path -> child row, rebuilt only when it is missing or out of step."""
+        children = parent.children or []
         if parent.child_map is None or len(parent.child_map) != len(children):
             parent.child_map = {str(c.path): c for c in children}
-        return parent.child_map.get(str(path))
+        return parent.child_map
 
     def refresh_sample_rows(self, root_node: Node, sample_path: str,
                             entry) -> None:
@@ -1277,7 +1294,7 @@ class _DiscoverTask(QRunnable):
     """
 
     def __init__(self, node: Node, token: CancelToken,
-                 limit: int = index_store.SAMPLE_LIMIT,
+                 limit: int | None = None,
                  use_cache: bool = True):
         super().__init__()
         # Qt owns a QRunnable by default and deletes it as soon as run()
@@ -1290,7 +1307,9 @@ class _DiscoverTask(QRunnable):
         self.setAutoDelete(False)
         self.node = node
         self._token = token
-        self._limit = limit
+        # Read when the task is made, not when this module was imported, so
+        # the limit and the "near the limit" check always agree.
+        self._limit = index_store.SAMPLE_LIMIT if limit is None else limit
         self._use_cache = use_cache
         self.signals = _DiscoverSignals()
 
@@ -1854,10 +1873,12 @@ class DatasetPopulator(QObject):
             index.complete = complete
             self._model.mark_dirty(node.path)
             self._schedule_save()
+        found = len(index.samples) if index else len(paths)
         if truncated:
-            self._model.scanTruncated.emit(
-                str(node.path), len(index.samples) if index else 0
-            )
+            self._model.scanTruncated.emit(str(node.path), found)
+        elif complete and found >= (index_store.SAMPLE_LIMIT
+                                    * index_store.NEAR_LIMIT_FRACTION):
+            self._model.nearLimit.emit(str(node.path), found)
         elif complete and not node.children:
             # A root that contains nothing recognisable used to sit there
             # refusing to expand, with no message -- indistinguishable from a
@@ -2153,10 +2174,12 @@ class DatasetPopulator(QObject):
             index = self._model.cached_index(key)
             if index is None:
                 continue
+            started = time.perf_counter()
             try:
                 payload = index.to_dict()
             except (TypeError, ValueError):      # pragma: no cover - defensive
                 continue
+            self._pace_saves(time.perf_counter() - started)
             if synchronous:
                 index_store.save_payload(key, payload)
                 continue
@@ -2167,3 +2190,21 @@ class DatasetPopulator(QObject):
 
     def _on_saved(self, task) -> None:
         self._inflight.discard(task)
+
+    SAVE_INTERVAL_MS = 4000
+    SAVE_INTERVAL_MAX_MS = 120_000
+    SAVE_BUSY_FACTOR = 20
+
+    def _pace_saves(self, seconds: float) -> None:
+        """Space saves so serialising stays a small share of GUI time.
+
+        to_dict() runs on the GUI thread and grows with the root: 0.3 s at
+        20,000 samples, 1.6 s at 100,000. Every 4 s regardless, a big root
+        being indexed would freeze the window for a third of the time. The
+        wait is SAVE_BUSY_FACTOR times the last serialisation -- under 5% of
+        the GUI's time -- and never below the old 4 s for small roots.
+        """
+        interval = max(self.SAVE_INTERVAL_MS,
+                       min(self.SAVE_INTERVAL_MAX_MS,
+                           int(seconds * 1000 * self.SAVE_BUSY_FACTOR)))
+        self._save_timer.setInterval(interval)

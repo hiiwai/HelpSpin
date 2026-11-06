@@ -25,7 +25,7 @@ conda create -n helspin python=3.11 && conda activate helspin
 pip install -e ".[dev]"
 helspin              # launch
 helspin --version    # prints version, needs no display
-pytest               # 1375 tests
+pytest               # 1392 tests
 ```
 
 **Version discipline:** `pyproject.toml` is the single source of truth.
@@ -65,6 +65,71 @@ helspin/
 Kept for a possible future "precise layout" mode. Do not assume they run.
 
 ---
+
+## 3a. Fast finding — keep in EVERY version
+
+Finding data quickly in the explorer is a core feature, and it has been
+lost more than once by changes that looked harmless. Every rule below fixed
+a real report; each is pinned by tests that COUNT filesystem calls or bound
+GUI-thread time (`tests/test_browser_speed.py`,
+`test_background_index_all_roots.py`, `test_refresh_reflects_disk.py`,
+`test_large_roots.py`). If one of those tests fails, fix the code, not the
+test. Measure with a slow share in mind: 5-20 ms per file operation, where
+a local disk hides everything.
+
+**What a session costs, and must keep costing**
+
+- *Second and later sessions:* the cached index shows every root at once
+  (one local file read per root), opening any sample needs **no** network
+  access, and the background pass is **one stat per sample**. Nothing may
+  re-walk a share at start-up.
+- *First session:* rows stream in batches as discovery finds them; the full
+  experiment lists and metadata are read once, in the background, and
+  cached.
+
+**Rules**
+
+1. **Cache first.** `_DiscoverTask` loads the on-disk index before touching
+   the share; a complete index means no walk. Only Refresh re-walks.
+2. **Tiered work.** Discovery = one listing per folder, stopping at the first
+   numbered subfolder (`_has_integer_child_dir`); experiment lists only for
+   opened samples or by the background indexer; metadata = one `acqus` read
+   per row (`probe_row`), never `probe()` with its nine round trips.
+3. **Parallel discovery, serial order.** `discover_samples(workers=8)`
+   checks a folder's children concurrently but reports them in sorted,
+   depth-first order. Never one round trip at a time again.
+4. **Every root is indexed.** One shared background queue for all roots
+   (`_bg_queue` of (root, job)); never a single "current root" whose queue a
+   newly started root replaces (0.9.15). Removing a root cancels only its
+   own work.
+5. **Refresh reaches inside samples.** A sample folder's date does not
+   change when an experiment inside is processed. Refresh re-lists every
+   sample that changed OR has an unfinished experiment
+   (`SampleEntry.unsettled`); start-up does so for those changed in the
+   last two weeks. Re-lists skip `settled_names()` (0.9.16).
+6. **No GUI-thread cost per batch that grows with the root.** Discovery
+   batches extend the root's path -> row map (`appendChildren`); they never
+   rebuild it (quadratic: 19 s frozen at 100,000 samples). Any new per-batch
+   or per-result code must be O(batch), not O(rows).
+7. **Saves are paced.** `to_dict()` runs on the GUI thread; `_pace_saves`
+   keeps it under ~5% of the time (4 s minimum, 120 s maximum). Each
+   `_SaveTask` leaves `_inflight` when written and drops its payload.
+8. **Big-root filtering waits for a pause in typing** (250 ms) above 5000
+   sample rows; small roots filter at once.
+9. **Limit and warnings.** `SAMPLE_LIMIT` = 100,000 samples per root (it was
+   5000 until 0.9.15, then 20,000), read at run time. Reaching it -- or 90%
+   of it -- warns once per root and session in a dialog, and a truncated
+   root says so on its row. Raising it costs smaller roots nothing: all
+   costs scale with the samples present, never with the limit.
+10. **Index rows are compact.** `ExpnoEntry`/`SampleEntry` use slots (a
+    100,000-sample root holds about a million entries: ~190 MB with slots)
+    and `from_row` decodes flags from a table.
+
+**Measured at 100,000 samples x 10 experiments** (0.9.17, this machine):
+streaming all rows in 1.4 s of GUI time; cache 63 MB, loaded in ~4 s on a
+worker thread; one filter pass 0.65 s; one save serialisation 1.6 s (so one
+save per 32 s). Re-measure (see test_large_roots.py for the method) before raising the
+limit again; anything that grows faster than linearly must be fixed first.
 
 ## 4. Hard-won decisions — do not undo without reading why
 
@@ -777,7 +842,7 @@ Both live under `build/`, never in the repository.
   only when it was True.
 - `discover_samples(workers=N)` checks one directory's children in parallel
   but emits in the serial order; keep it deterministic -- tests compare the
-  two. `SAMPLE_LIMIT` is 20000; truncation is shown on the root row.
+  two. `SAMPLE_LIMIT` was 20000 here; 100,000 since 0.9.17 (see 3a).
 
 ## Background indexing covers every root (0.9.15)
 

@@ -69,10 +69,18 @@ DISCOVER_BATCH = 40
 # Most samples a data root may hold before discovery stops. A guard against
 # pointing HelSpin at "/" or a whole server, not a size anyone should reach:
 # the walk is sorted by name, so the samples cut off are the LAST ones --
-# with date-prefixed names, the newest data. 5000 was low enough for a real
-# instrument archive to hit, at which point new data silently never appeared
-# however often Refresh was pressed.
-SAMPLE_LIMIT = 20000
+# with date-prefixed names, the newest data. 5000 (until 0.9.15) was low
+# enough for a real instrument archive to hit, at which point new data
+# silently never appeared however often Refresh was pressed.
+#
+# Raising it costs nothing for smaller roots: every cost scales with the
+# samples actually present, never with this number. What has to stay true
+# for a root this size is listed in HANDOFF.md, "Fast finding".
+SAMPLE_LIMIT = 100_000
+
+# A root this close to the limit is reported too, while there is still time
+# to split it before data starts being cut off.
+NEAR_LIMIT_FRACTION = 0.9
 
 # Directory checks run in parallel during discovery. On a share every check
 # is a round trip, and they are independent, so this divides the time to find
@@ -86,7 +94,22 @@ DISCOVER_WORKERS = 8
 RECENT_SECONDS = 14 * 24 * 3600
 
 
-@dataclass
+def _decode_flags(flags: int) -> tuple:
+    """as_row()'s flag bits -> the eight flag fields, in declaration order:
+    has_acqus, has_pdata, has_fid, has_ser, has_acqu2s, has_acqu3s, meta,
+    has_processed (None unless bit 256 says it was looked at)."""
+    return (bool(flags & 1), bool(flags & 2), bool(flags & 4), bool(flags & 8),
+            bool(flags & 16), bool(flags & 32), bool(flags & 64),
+            bool(flags & 128) if flags & 256 else None)
+
+
+_FLAG_BITS = tuple(_decode_flags(f) for f in range(512))
+
+
+# slots: a 100,000-sample root holds about a million of these. Without slots
+# each carries its own attribute dict (~3x the memory) and is slower to build
+# when the cache is loaded.
+@dataclass(slots=True)
 class ExpnoEntry:
     """One experiment, as known from directory listings plus (later) acqus.
 
@@ -184,6 +207,14 @@ class ExpnoEntry:
         if len(row) == 3 and isinstance(row[1], bool):
             return cls(name=name, has_acqus=bool(row[1]), has_pdata=bool(row[2]))
         flags = int(row[1]) if len(row) > 1 else 0
+        if len(row) >= 8 and 0 <= flags < len(_FLAG_BITS):
+            # The common, current form, on the fast path: positional fields
+            # and a pre-decoded flag tuple. Loading a 100,000-sample cache
+            # builds a million of these, and the keyword form below took
+            # three times as long.
+            return cls(name, *_FLAG_BITS[flags], row[7] or "", row[2] or "",
+                       row[3] or "", row[4] or "", row[5] or "",
+                       int(row[6] or 0), "")
         entry = cls(
             name=name,
             has_acqus=bool(flags & 1),
@@ -206,7 +237,7 @@ class ExpnoEntry:
         return entry
 
 
-@dataclass
+@dataclass(slots=True)
 class SampleEntry:
     path: str
     mtime: float = 0.0

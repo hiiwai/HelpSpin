@@ -183,6 +183,8 @@ class MainWindow(QMainWindow):
         # indistinguishable from a hang, which is exactly how the old
         # all-at-once index build was experienced.
         self._browser.statusChanged.connect(self._on_browser_status)
+        self._browser.sampleLimit.connect(self._on_sample_limit)
+        self._sample_limit_warned: set = set()
         self._canvas.loadFailed.connect(self._on_load_failed)
         self._canvas.modeChanged.connect(self._on_mode_changed)
         self._canvas.dimensionalityRefused.connect(
@@ -481,6 +483,37 @@ class MainWindow(QMainWindow):
         self._browser.add_data_root(root)
         save_data_roots(self._browser.data_roots())
         self.statusBar().clearMessage()
+
+    def _on_sample_limit(self, path: str, found: int, reached: bool) -> None:
+        """Say ONCE per root and session that a root is at or near the limit.
+
+        A dialog rather than the status bar: the status bar is overwritten
+        within seconds, and when this happens the newest data is (or soon
+        will be) missing from the explorer -- worth an interruption.
+        """
+        from .core.dataset_index import SAMPLE_LIMIT
+
+        key = (path, reached)
+        if key in self._sample_limit_warned:
+            return
+        self._sample_limit_warned.add(key)
+        if reached:
+            text = (
+                f"{path} holds more than {SAMPLE_LIMIT:,} samples, so the "
+                f"explorer shows only the first {found:,} by name. Samples "
+                "after those -- with date-named folders, the NEWEST data -- "
+                "are not shown.\n\nAdd a more specific folder (a year, a "
+                "user, an instrument) as its own data root."
+            )
+        else:
+            text = (
+                f"{path} holds {found:,} samples, close to the "
+                f"{SAMPLE_LIMIT:,} the explorer searches. Beyond that the "
+                "newest data would stop appearing.\n\nConsider adding more "
+                "specific folders (a year, a user, an instrument) as "
+                "separate data roots."
+            )
+        QMessageBox.warning(self, "Data root is very large", text)
 
     def _use_overlay(self) -> None:
         self._canvas.set_arrangement(SpectrumCanvas.ARRANGEMENT_OVERLAY)

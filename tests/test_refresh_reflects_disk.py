@@ -279,7 +279,7 @@ def test_the_app_searches_up_to_the_new_limit_with_parallel_checks(monkeypatch,
                    display_name="600")
     task = dm._DiscoverTask(node, dm.CancelToken(), use_cache=False)
     task.run()
-    assert di.SAMPLE_LIMIT == 20000
+    assert di.SAMPLE_LIMIT >= 20000           # 100,000 since 0.9.17
     assert seen["limit"] == di.SAMPLE_LIMIT
     assert seen["workers"] == di.DISCOVER_WORKERS > 1
 
