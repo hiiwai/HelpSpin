@@ -34,6 +34,7 @@ Threading rules, learned the hard way:
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -669,7 +670,13 @@ class DatasetTreeModel(QAbstractItemModel):
                 expno.date = old.date
                 expno.dim = old.dim
                 expno.error = old.error
-                # has_processed is NOT carried over -- see refresh_sample.
+                # A processed state is carried only once it is True:
+                # processed data does not become unprocessed, while "not
+                # processed yet" is exactly what changes without touching the
+                # sample folder (see refresh_sample) and is read again.
+                if old.has_processed is True and expno.has_pdata:
+                    expno.has_processed = True
+                    expno.processed_note = old.processed_note
         entry.expnos = expnos
         entry.detailed = True
         entry.mtime = index_store.sample_mtime(sample_path)
@@ -1030,6 +1037,10 @@ class DatasetTreeModel(QAbstractItemModel):
         if role == Qt.ToolTipRole:
             if node.failed:
                 return node.error or "Could not read this location."
+            if node.kind is NodeKind.DATA_ROOT and node.truncated:
+                return ("This folder holds more samples than HelSpin searches "
+                        f"({index_store.SAMPLE_LIMIT}); later ones by name are "
+                        "not shown. Add a more specific folder as a data root.")
             if node.kind is NodeKind.EXPNO and not node.loadable:
                 return node.load_note()
 
@@ -1045,7 +1056,15 @@ class DatasetTreeModel(QAbstractItemModel):
             return None
 
         if node.kind is not NodeKind.EXPNO:
-            return node.display_name if col == COL_NAME else None
+            if col != COL_NAME:
+                return None
+            if node.kind is NodeKind.DATA_ROOT and node.truncated:
+                # Said on the row itself: a status-bar message is replaced by
+                # the next one within seconds, and missing it meant missing
+                # that the newest data was not being looked for at all.
+                return (f"{node.display_name}  (only the first "
+                        f"{index_store.SAMPLE_LIMIT} samples)")
+            return node.display_name
 
         if col == COL_NAME:
             return node.display_name
@@ -1257,7 +1276,8 @@ class _DiscoverTask(QRunnable):
     saying the cache is out of date.
     """
 
-    def __init__(self, node: Node, token: CancelToken, limit: int = 5000,
+    def __init__(self, node: Node, token: CancelToken,
+                 limit: int = index_store.SAMPLE_LIMIT,
                  use_cache: bool = True):
         super().__init__()
         # Qt owns a QRunnable by default and deletes it as soon as run()
@@ -1296,6 +1316,7 @@ class _DiscoverTask(QRunnable):
                 limit=self._limit,
                 on_batch=lambda found: self.signals.batch.emit(self, node, found),
                 should_stop=lambda: self._token.stopped,
+                workers=index_store.DISCOVER_WORKERS,
             )
         except Exception as exc:      # noqa: BLE001 -- a walk must not kill the app
             self.signals.failed.emit(self, node, str(exc))
@@ -1404,21 +1425,23 @@ class _IndexTask(QRunnable):
         self.setAutoDelete(False)
         self._reader = reader
         self.root_node = root_node
-        self._jobs = jobs        # [(sample_path, needs_detail, [expno names])]
+        # [(sample_path, needs_detail, [names to read], {names to skip})]
+        self._jobs = jobs
         self._token = token
         self.signals = _IndexSignals()
 
     def run(self) -> None:
         data_root = self.root_node.data_root
         out = []
-        for sample_path, needs_detail, expno_names in self._jobs:
+        for sample_path, needs_detail, expno_names, settled in self._jobs:
             if self._token.stopped:
                 break
             expnos = (
                 index_store.scan_expnos(sample_path) if needs_detail else None
             )
             if expnos is not None:
-                names = [e.name for e in expnos if e.displayable and not e.meta]
+                names = [e.name for e in expnos
+                         if e.displayable and not e.meta and e.name not in settled]
                 by_name = {e.name: e for e in expnos}
             else:
                 names = list(expno_names)
@@ -1449,7 +1472,8 @@ class _StaleTask(QRunnable):
     share.
     """
 
-    def __init__(self, root_node: Node, entries: list, token: CancelToken):
+    def __init__(self, root_node: Node, entries: list, token: CancelToken,
+                 deep: bool = False):
         super().__init__()
         # Qt owns a QRunnable by default and deletes it as soon as run()
         # returns -- while this object is still in the populator's _inflight
@@ -1460,17 +1484,23 @@ class _StaleTask(QRunnable):
         # these tasks; Qt must not.
         self.setAutoDelete(False)
         self.root_node = root_node
-        self._entries = entries    # [(path, known mtime)]
+        self._entries = entries    # [(path, known mtime, unsettled)]
         self._token = token
+        # deep (an explicit Refresh): every sample with an experiment still
+        # in progress is re-listed. Otherwise (start-up) only recent ones.
+        self._deep = deep
         self.signals = _StaleSignals()
 
     def run(self) -> None:
         changed = []
-        for path, known in self._entries:
+        recent = time.time() - index_store.RECENT_SECONDS
+        for path, known, unsettled in self._entries:
             if self._token.stopped:
                 break
             current = index_store.sample_mtime(path)
             if current > known:
+                changed.append(path)
+            elif unsettled and current and (self._deep or current >= recent):
                 changed.append(path)
         self.signals.done.emit(self, self.root_node, changed)
 
@@ -1813,6 +1843,11 @@ class DatasetPopulator(QObject):
             # Only a refresh may remove rows: a cancelled or partial walk
             # saying "I did not see it" is not the same as it being gone.
             self._model.drop_missing_samples(node, {str(p) for p in paths})
+            # And a refresh must reach INSIDE known samples too: new
+            # experiments, and experiments processed since they were indexed
+            # (which change nothing a folder-level date can see). Started now,
+            # not after the new samples are indexed.
+            self._check_staleness(node, deep=True)
         index = self._model.cached_index(node.path)
         if index is not None:
             index.truncated = truncated
@@ -1960,12 +1995,15 @@ class DatasetPopulator(QObject):
             if (root_key, sample.path) in self._bg_scheduled:
                 continue
             if not sample.detailed:
-                jobs.append((sample.path, True, []))
+                # Re-listing: what was already read and is settled need not
+                # be read again -- one listing per experiment, plus reads
+                # only for the new or still-changing ones.
+                jobs.append((sample.path, True, [], sample.settled_names()))
             elif not sample.meta_complete:
                 jobs.append(
                     (sample.path, False,
                      [e.name for e in sample.expnos
-                      if e.displayable and not e.meta])
+                      if e.displayable and not e.meta], set())
                 )
         if not jobs:
             if not self._bg_pending.get(id(root_node)):
@@ -2048,6 +2086,13 @@ class DatasetPopulator(QObject):
                         continue
                     _write_meta(expno, values)
                 entry.invalidate()
+                if expnos is not None:
+                    # Re-listed: an EXPANDED sample also needs rows for new
+                    # experiments, not just fresh columns on existing ones.
+                    sample_node = self._model.child_node(root_node, sample_path)
+                    if sample_node is not None and sample_node.is_fetched:
+                        sample_node.entry = entry
+                        self._model.merge_sample_children(sample_node)
                 self._model.refresh_sample_rows(root_node, sample_path, entry)
             self._model.mark_dirty(root_node.path)
             self._schedule_save()
@@ -2056,7 +2101,7 @@ class DatasetPopulator(QObject):
         if live and not left:
             self._check_staleness(root_node)
 
-    def _check_staleness(self, root_node: Node) -> None:
+    def _check_staleness(self, root_node: Node, deep: bool = False) -> None:
         """Once per root per session: stat the indexed samples and re-read the
         ones that changed. One stat each, in the background, so an experiment
         that appeared while HelSpin was open shows up on its own."""
@@ -2065,11 +2110,12 @@ class DatasetPopulator(QObject):
         index = self._model.cached_index(root_node.path)
         if index is None:
             return
-        entries = [(s.path, s.mtime) for s in index.samples if s.detailed]
+        entries = [(s.path, s.mtime, s.unsettled)
+                   for s in index.samples if s.detailed]
         if not entries:
             return
         self._stale_checked.add(id(root_node))
-        task = _StaleTask(root_node, entries, self._token)
+        task = _StaleTask(root_node, entries, self._token, deep=deep)
         task.signals.done.connect(self._on_stale_checked)
         self._inflight.add(task)
         self._bg_pool.start(task)

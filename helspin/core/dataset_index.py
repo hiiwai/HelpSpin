@@ -49,6 +49,7 @@ import json
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -64,6 +65,25 @@ MAX_DEPTH = 8
 # the first rows appear almost immediately, large enough that a 5000-sample
 # root does not cost 5000 thread hops.
 DISCOVER_BATCH = 40
+
+# Most samples a data root may hold before discovery stops. A guard against
+# pointing HelSpin at "/" or a whole server, not a size anyone should reach:
+# the walk is sorted by name, so the samples cut off are the LAST ones --
+# with date-prefixed names, the newest data. 5000 was low enough for a real
+# instrument archive to hit, at which point new data silently never appeared
+# however often Refresh was pressed.
+SAMPLE_LIMIT = 20000
+
+# Directory checks run in parallel during discovery. On a share every check
+# is a round trip, and they are independent, so this divides the time to find
+# all samples by roughly this number; on a local disk it changes nothing.
+DISCOVER_WORKERS = 8
+
+# A sample changed within this long is re-listed at start-up if it has any
+# experiment still in progress (see SampleEntry.unsettled), even though its
+# own folder's date did not change -- processing writes inside the experiment
+# folder, which a sample-level check cannot see.
+RECENT_SECONDS = 14 * 24 * 3600
 
 
 @dataclass
@@ -222,6 +242,27 @@ class SampleEntry:
     @property
     def meta_complete(self) -> bool:
         return self.detailed and all(e.meta for e in self.expnos if e.displayable)
+
+    @property
+    def unsettled(self) -> bool:
+        """Has an experiment that may still change on disk: no pdata yet
+        (acquiring, or not processed), pdata without a processed spectrum,
+        or no acqus. Such changes happen INSIDE the experiment folder and do
+        not touch the sample folder's date, so a date check alone misses
+        them -- the reason Refresh did not show newly processed data."""
+        return self.detailed and any(
+            (not e.has_pdata) or e.has_processed is False or not e.has_acqus
+            for e in self.expnos
+        )
+
+    def settled_names(self) -> set:
+        """Experiments whose cached metadata cannot have changed: read,
+        processed, with acqus. A re-listing need not read them again."""
+        return {
+            e.name for e in self.expnos
+            if e.meta and e.has_pdata and e.has_acqus and e.has_processed is True
+            and not e.error
+        }
 
 
 @dataclass
@@ -552,6 +593,7 @@ def discover_samples(
     should_stop=None,
     depth: int = MAX_DEPTH,
     batch_size: int = DISCOVER_BATCH,
+    workers: int = 1,
 ) -> tuple[list[str], bool]:
     """Find sample directories under ``root``. Returns (paths, truncated).
 
@@ -562,7 +604,9 @@ def discover_samples(
     minutes.
 
     Cost is one listing per directory visited, and a sample is a leaf -- the
-    walk never descends into one.
+    walk never descends into one. With ``workers`` > 1 the sample checks of
+    one directory's children run concurrently; results are still reported
+    in the same sorted, depth-first order as a serial walk.
     """
     root = str(root)
     found: list[str] = []
@@ -597,18 +641,14 @@ def discover_samples(
     except OSError:
         root_real = root
 
-    def walk(directory: str, remaining: int) -> bool:
-        """False means: stop the whole walk (limit reached or cancelled)."""
-        if remaining < 0:
-            return True
-        if stopped():
-            return False
+    pool = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
+    # Checked a chunk at a time, so a cancel or the limit is noticed within
+    # one chunk rather than after a directory of ten thousand children.
+    chunk = max(1, workers * 4)
 
+    def candidates(directory: str) -> list:
+        out = []
         for child in _sub_directories(directory):
-            if len(found) >= limit:
-                return False
-            if stopped():
-                return False
             if child.name == "pdata":
                 continue
             # is_symlink() is free -- it comes from the directory read. Only
@@ -630,19 +670,47 @@ def discover_samples(
                 # per link rather than one per sample.
                 if target == root_real or target.startswith(root_real + os.sep):
                     continue
-            if _has_integer_child_dir(child.path):
-                emit(child.path)
-                continue    # a sample is a leaf for this purpose
-            if not walk(child.path, remaining - 1):
+            out.append(child)
+        return out
+
+    def walk(directory: str, remaining: int) -> bool:
+        """False means: stop the whole walk (limit reached or cancelled)."""
+        if remaining < 0:
+            return True
+        if stopped():
+            return False
+        children = candidates(directory)
+        for start in range(0, len(children), chunk):
+            if stopped():
                 return False
+            part = children[start:start + chunk]
+            if pool is not None and len(part) > 1:
+                verdicts = list(pool.map(
+                    _has_integer_child_dir, [c.path for c in part]
+                ))
+            else:
+                verdicts = [_has_integer_child_dir(c.path) for c in part]
+            for child, is_sample in zip(part, verdicts, strict=True):
+                if len(found) >= limit:
+                    return False
+                if stopped():
+                    return False
+                if is_sample:
+                    emit(child.path)
+                    continue    # a sample is a leaf for this purpose
+                if not walk(child.path, remaining - 1):
+                    return False
         return True
 
-    if _has_integer_child_dir(root):
-        emit(root)
-        flush()
-        return found, False
-
-    completed = walk(root, depth)
+    try:
+        if _has_integer_child_dir(root):
+            emit(root)
+            flush()
+            return found, False
+        completed = walk(root, depth)
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=True)
     flush()
     # Cancellation is not truncation: the caller asked to stop, and saying
     # "your root is too big" for that would be a lie shown in the status bar.

@@ -25,7 +25,7 @@ conda create -n helspin python=3.11 && conda activate helspin
 pip install -e ".[dev]"
 helspin              # launch
 helspin --version    # prints version, needs no display
-pytest               # 1359 tests
+pytest               # 1375 tests
 ```
 
 **Version discipline:** `pyproject.toml` is the single source of truth.
@@ -765,6 +765,19 @@ Both live under `build/`, never in the repository.
   box and dragging a spectrum.
 - **The box zoom must respect 4.r and 4.s**: no `_y_range` in stacked mode,
   and never clear an explicit `_y_range` on an X zoom.
+
+## Refresh reaches inside samples; discovery is parallel (0.9.16)
+
+- A sample folder's mtime does NOT change when an experiment inside it is
+  processed. `SampleEntry.unsettled` (no pdata / not processed / no acqus)
+  is what marks a sample as worth re-listing: always on an explicit Refresh
+  (`_check_staleness(deep=True)`), and at start-up when changed within
+  `RECENT_SECONDS`.
+- A re-list skips `settled_names()`; `merge_expnos` carries has_processed
+  only when it was True.
+- `discover_samples(workers=N)` checks one directory's children in parallel
+  but emits in the serial order; keep it deterministic -- tests compare the
+  two. `SAMPLE_LIMIT` is 20000; truncation is shown on the root row.
 
 ## Background indexing covers every root (0.9.15)
 

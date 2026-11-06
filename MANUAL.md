@@ -1,6 +1,6 @@
 # HelSpin — User Manual
 
-Version 0.9.15
+Version 0.9.16
 
 Compare Bruker NMR spectra and build publication figures.
 
@@ -64,7 +64,17 @@ have not been expanded yet.
 
 The tree does **not** watch the filesystem. Network shares make that
 unreliable, so refreshing is explicit: right-click a node to refresh it, or
-**Refresh All** / **F5**.
+**Refresh All** / **F5**. Refreshing a data root finds new and removed
+samples, and also looks inside known samples — expanded or not — for new
+experiments and for experiments processed since they were last seen. That
+second part runs in the background ("Indexing in background…").
+
+At start-up HelSpin also re-checks, by itself, samples changed in the last
+two weeks that still have experiments in progress, so freshly processed
+data usually appears without a refresh.
+
+A data root holding more than 20000 samples is cut off at that point, and
+its row says so; add a more specific folder instead.
 
 ### Opening spectra
 

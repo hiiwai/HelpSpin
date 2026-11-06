@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.9.16 - 2026-11-04
+
+### Fixed: Refresh did not show what is on disk
+
+Refresh re-walked a data root for new and removed samples but never looked
+inside samples it had not expanded. An experiment processed after it was
+indexed -- TopSpin writes inside the experiment folder, which leaves the
+sample folder's date untouched -- stayed hidden however often Refresh was
+pressed. Now refreshing a root also re-lists, in the background, every known
+sample that changed or still has an experiment in progress (no pdata yet,
+no processed spectrum, or no acqus), and expanded samples gain rows for new
+experiments as they are found. At start-up, samples changed in the last two
+weeks with experiments in progress are re-checked by themselves.
+
+Re-listing a sample reads metadata only for new or unfinished experiments;
+already processed ones keep their cached values.
+
+### Fixed: the newest data was not found in large data roots
+
+Discovery stopped at 5000 samples, and because it walks folders in name
+order, the samples cut off were the last ones -- with date-prefixed names,
+the newest. Refresh hit the same limit, so new data never appeared. The limit
+is now 20000 (still a guard against adding a whole disk by mistake), and a
+root that reaches it says so on its own row, not in a passing status message.
+
+### Faster: finding samples
+
+Discovery checked folders one after another, one network round trip each.
+The checks of a folder's subfolders now run 8 at a time, in the same order as
+before. Measured on a simulated share (4 ms per file operation): 600 samples
+found in 0.4 s instead of 2.6 s.
+
+1375 tests (up from 1359).
+
 ## 0.9.15 - 2026-11-04
 
 ### Fixed: data roots added earlier stayed slow to browse
