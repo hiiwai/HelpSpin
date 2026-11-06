@@ -25,7 +25,7 @@ conda create -n helspin python=3.11 && conda activate helspin
 pip install -e ".[dev]"
 helspin              # launch
 helspin --version    # prints version, needs no display
-pytest               # 1433 tests
+pytest               # 1447 tests
 ```
 
 **Version discipline:** `pyproject.toml` is the single source of truth.
@@ -133,6 +133,24 @@ a local disk hides everything.
    of it -- warns once per root and session in a dialog, and a truncated
    root says so on its row. Raising it costs smaller roots nothing: all
    costs scale with the samples present, never with the limit.
+9b. **Nothing about one folder may hide or stop the search of the others**
+   (0.9.20). Errors are handled per ENTRY in `_sub_directories` (one
+   unreadable sibling used to empty a whole folder's listing) and per
+   folder in `discover_samples` (one odd folder -- e.g. named "²", which
+   isdigit() but int() refuses -- used to raise and end the search, losing
+   everything later in name order). Failed listings are retried once.
+   Everything skipped is recorded (`problems`, kept with the index, capped
+   at `MAX_PROBLEMS`) and reported: status bar, `--why`, `--scan`. Folder
+   numbers are ASCII digits only (`domain.paths.is_number_name`).
+   `helspin --scan ROOT --find PATH` runs the explorer's own search and is
+   the first thing to ask a user for when data "is not found".
+9c. **An unfinished search resumes** (0.9.20). Each discovery batch stores
+   `RootIndex.resume_after` (and marks the index dirty, so closing HelSpin
+   saves it); the next start passes it to `discover_samples`, which skips
+   everything up to it in the same depth-first name order. A resumed walk
+   must not drop rows. Without this, a volume needing more than one session
+   to search restarted from the top every time and never reached its last
+   folders.
 10. **Index rows are compact.** `ExpnoEntry`/`SampleEntry` use slots (a
     100,000-sample root holds about a million entries: ~190 MB with slots)
     and `from_row` decodes flags from a table.

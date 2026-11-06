@@ -1,6 +1,6 @@
 # HelSpin — User Manual
 
-Version 0.9.19
+Version 0.9.20
 
 Compare Bruker NMR spectra and build publication figures.
 
@@ -346,6 +346,17 @@ whether the sample is in the explorer's saved index -- if not, press
 Refresh (F5). Any folder below the sample works too, e.g. `.../5/pdata/1`.
 `helspin --check /path/to/SAMPLE` then reports, experiment by experiment,
 whether a plottable spectrum is there.
+
+To see what a search of a whole data root finds -- and which folders it
+could not read -- run the explorer's own search from a terminal:
+
+```
+helspin --scan /path/to/DATA_ROOT --find /path/to/SAMPLE
+```
+
+It reports how many samples it found in each top-level folder, every folder
+or entry it could not read (and skipped), and whether the given sample was
+found. On a large share this takes as long as the explorer's first search.
 Note that Bruker writes `acqus`, `pdata` and `1r` in lower case and Linux
 filesystems are case-sensitive, so data copied from Windows by a tool that
 changed case will not be recognised.

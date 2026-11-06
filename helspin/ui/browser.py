@@ -189,6 +189,16 @@ class DatasetBrowser(QWidget):
         layout.addWidget(self._tree)
 
         self._model.scanFailed.connect(self.scanFailed)
+        # Said in the status bar too: a failed or partial search used to be
+        # completely silent (nothing listened), so missing data looked like
+        # data that was not there.
+        self._model.scanFailed.connect(
+            lambda path, message: self.statusChanged.emit(
+                f"Could not search {path}: {message}"))
+        self._model.searchProblems.connect(
+            lambda path, count: self.statusChanged.emit(
+                f"{count} folder(s) under {path} could not be read and were "
+                f"skipped. For details: helspin --scan \"{path}\""))
         self._model.scanTruncated.connect(self._on_truncated)
         self._model.nearLimit.connect(
             lambda path, found: self.sampleLimit.emit(path, found, False)

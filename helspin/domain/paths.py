@@ -36,10 +36,20 @@ DEFAULT_SCAN_LIMIT = 200
 DEFAULT_SAMPLE_LIMIT = 5000
 
 
+def is_number_name(name: str) -> bool:
+    """A Bruker expno/procno folder name: plain ASCII digits.
+
+    str.isdigit() alone also accepts "²", "①" and other Unicode digits, which
+    int() then refuses -- one such folder anywhere on a shared volume raised
+    in the middle of a search and stopped it.
+    """
+    return name.isascii() and name.isdigit()
+
+
 def is_expno(path: Path) -> bool:
     """A Bruker experiment directory: integer name, containing acqus."""
     try:
-        return path.is_dir() and path.name.isdigit() and (path / "acqus").is_file()
+        return path.is_dir() and is_number_name(path.name) and (path / "acqus").is_file()
     except OSError:
         # Unreachable mount, permission denied: not an expno, never a crash.
         return False
@@ -50,7 +60,7 @@ def is_procno(path: Path) -> bool:
     try:
         return (
             path.is_dir()
-            and path.name.isdigit()
+            and is_number_name(path.name)
             and path.parent.name == "pdata"
             and is_expno(path.parent.parent)
         )
@@ -83,7 +93,7 @@ def procnos_in(expno: Path) -> list[Path]:
     try:
         if not pdata.is_dir():
             return []
-        found = [c for c in pdata.iterdir() if c.is_dir() and c.name.isdigit()]
+        found = [c for c in pdata.iterdir() if c.is_dir() and is_number_name(c.name)]
     except OSError:
         return []
     return sorted(found, key=lambda p: int(p.name))
@@ -227,7 +237,7 @@ def parse_expno_spec(text: str) -> list[int]:
                 continue
             if lo <= hi:
                 out.extend(range(lo, hi + 1))
-        elif part.isdigit():
+        elif is_number_name(part):
             out.append(int(part))
     # De-duplicate, preserving order.
     seen: set[int] = set()
@@ -308,7 +318,7 @@ def parse_topspin_identifier(text: str) -> TopSpinIdentifier | None:
     if len(parts) < 5:
         return None
     name, expno_s, procno_s = parts[0], parts[1], parts[2]
-    if not (expno_s.isdigit() and procno_s.isdigit()):
+    if not (is_number_name(expno_s) and is_number_name(procno_s)):
         return None
     user = parts[-1]
     directory = " ".join(parts[3:-1])
@@ -345,11 +355,19 @@ def looks_like_experiment(path: str) -> bool:
 def numbered_subfolders(path: str) -> list:
     """Integer-named subfolders, lowest number first (symlinks followed: an
     expno reached through a link is still an expno). [] if unreadable."""
+    found = []
     try:
         with os.scandir(path) as entries:
-            found = [e for e in entries if e.name.isdigit() and e.is_dir()]
+            for entry in entries:
+                if not is_number_name(entry.name):
+                    continue
+                try:
+                    if entry.is_dir():
+                        found.append(entry)
+                except OSError:
+                    continue        # this entry only: never the whole folder
     except OSError:
-        return []
+        pass                        # keep what was read before the error
     return sorted(found, key=lambda e: int(e.name))
 
 
@@ -379,7 +397,7 @@ def _has_integer_child_dir(entry_path: str) -> bool:
     try:
         with os.scandir(entry_path) as entries:
             for child in entries:
-                if child.name.isdigit() and child.is_dir():
+                if is_number_name(child.name) and child.is_dir():
                     return True
     except OSError:
         return False

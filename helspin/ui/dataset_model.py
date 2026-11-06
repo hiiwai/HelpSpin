@@ -224,6 +224,7 @@ class DatasetTreeModel(QAbstractItemModel):
     scanFailed = Signal(str, str)      # path, error message -- for a status bar
     scanTruncated = Signal(str, int)   # path, how many samples were kept
     nearLimit = Signal(str, int)       # path, samples found (>= 90% of limit)
+    searchProblems = Signal(str, int)  # path, folders the search could not read
 
     def __init__(self, data_roots: list[DataRoot], reader=None, parent=None):
         super().__init__(parent)
@@ -1341,6 +1342,8 @@ class _DiscoverTask(QRunnable):
         self._limit = index_store.SAMPLE_LIMIT if limit is None else limit
         self._use_cache = use_cache
         self.walked = False      # True once the share is actually searched
+        self.problems: list = []  # (path, error) the search could not read
+        self.resumed = False      # True: continued an unfinished search
         self.signals = _DiscoverSignals()
 
     def run(self) -> None:
@@ -1356,17 +1359,26 @@ class _DiscoverTask(QRunnable):
                             cached.truncated, True,
                         )
                         return
-                    # A partial cache (an interrupted first run) is shown at
-                    # once and then completed by a real walk, which re-reports
-                    # the samples it already knows -- make_sample_nodes drops
-                    # the duplicates.
+                    # A partial cache (an interrupted search) is shown at
+                    # once and then completed by a real walk -- resumed after
+                    # the last sample that search reached, if it recorded one,
+                    # so a root too big for one sitting still gets finished.
             self.walked = True
+            resume = None
+            limit = self._limit
+            if (self._use_cache and cached is not None and cached.resume_after
+                    and not cached.complete):
+                resume = cached.resume_after
+                limit = max(1, self._limit - len(cached.samples))
+                self.resumed = True
             paths, truncated = index_store.discover_samples(
                 node.path,
-                limit=self._limit,
+                limit=limit,
+                resume_after=resume,
                 on_batch=lambda found: self.signals.batch.emit(self, node, found),
                 should_stop=lambda: self._token.stopped,
                 workers=index_store.DISCOVER_WORKERS,
+                problems=self.problems,
             )
         except Exception as exc:      # noqa: BLE001 -- a walk must not kill the app
             self.signals.failed.emit(self, node, str(exc))
@@ -1863,6 +1875,13 @@ class DatasetPopulator(QObject):
         if found is not None:
             found.update(str(p) for p in paths)
         self._add_samples(node, paths)
+        # Keep the progress: if HelSpin closes before the search finishes,
+        # the next start resumes after this point instead of from the top.
+        index = self._model.cached_index(node.path)
+        if index is not None and paths and not index.complete:
+            index.resume_after = str(paths[-1])
+            self._model.mark_dirty(node.path)
+            self._schedule_save()
         self.discovering.emit(
             str(node.path), len(node.children or [])
         )
@@ -1889,7 +1908,9 @@ class DatasetPopulator(QObject):
         if node.children is None:
             self._model.applyChildren(node, [])
         node.fetch_in_flight = False
-        if complete and (was_refresh or not truncated):
+        # A resumed walk saw only the tail: it may not remove rows.
+        resumed = bool(getattr(task, "resumed", False))
+        if complete and (was_refresh or not (truncated or resumed)):
             # Only a COMPLETE walk may remove rows: a cancelled or truncated
             # one saying "I did not see it" is not the same as it being gone.
             # (A walk after a partial or outdated cache counts too: that is
@@ -1905,11 +1926,17 @@ class DatasetPopulator(QObject):
         if index is not None:
             index.truncated = truncated
             index.complete = complete
+            if complete:
+                index.resume_after = ""
             if complete and getattr(task, "walked", True):
                 # When the root was last searched -- what `helspin --why`
                 # reports -- and, if it stopped early, at which limit.
                 index.built_at = time.time()
                 index.limit = index_store.SAMPLE_LIMIT if truncated else 0
+                index.problems = list(getattr(task, "problems", []))
+                if index.problems:
+                    self._model.searchProblems.emit(
+                        str(node.path), len(index.problems))
             self._model.mark_dirty(node.path)
             self._schedule_save()
         found = len(index.samples) if index else len(paths)

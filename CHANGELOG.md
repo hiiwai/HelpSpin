@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.9.20 - 2026-11-06 (test build -- not published until confirmed)
+
+### Fixed: one unreadable folder could hide or stop the whole search
+
+Reported on 0.9.19: nothing under `NMR600_2026/data/ETHZ` found on a large
+shared volume, although `helspin --why` walks straight to it. `--why` looks
+only at the folders on the way down; the search lists every sibling too, and
+there one bad entry could lose data silently:
+
+- An entry whose type could not be read (permission denied on a linked
+  folder, an entry the share would not stat) made the whole folder's listing
+  come back EMPTY, dropping every sample below that folder.
+- Anything unexpected in one folder (for example a folder named "²", which
+  counts as a digit but is not a number) raised out of the search and ended
+  it: everything later in name order -- on a volume, the newest year -- was
+  never reached. The failure went to a signal that nothing listened to, so
+  nothing was ever shown.
+
+Errors are now handled one entry and one folder at a time; a listing that
+fails is retried once; the rest of the search always continues. What could
+not be read is recorded with the index and reported in the status bar, by
+`helspin --why`, and by the new `helspin --scan`. A search that fails
+outright is now shown in the status bar.
+
+### Fixed: a search too big for one session never reached the end
+
+Diagnosis from the reporting machine: the saved search of the whole volume
+`/Volumes/Active_RD_NMR600` held exactly 5000 samples (the limit before
+0.9.16), was incomplete, and ended inside `Fragment libraries`, which sorts
+before `NMR600_2026`. No later version had replaced it: each start searched
+the volume again from the top, and a search cut short by closing HelSpin
+saved none of its progress -- so the end of the volume was never reached.
+
+A running search now saves its progress, and the next start resumes AFTER
+the last sample it reached (folders before that point are not even listed
+again). The samples found so far are shown at once, as before. A resumed
+search never removes rows (it saw only the rest of the root); a full one or
+Refresh still does.
+
+### Added: `helspin --scan ROOT [--find PATH]`
+
+Runs the explorer's own search of a data root from a terminal and reports
+the samples found per top-level folder, every folder it could not read, and
+whether PATH's sample was found. `--why` now also checks, at each level,
+that the folder appears in the search's own listing of its parent, and
+reports links whose target cannot be read.
+
+1462 tests (up from 1433).
+
 ## 0.9.19 - 2026-11-06
 
 ### Find samples by the folders they are in

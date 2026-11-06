@@ -1011,7 +1011,44 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         metavar="ROOT",
         help="with --why: the data root to search from",
     )
+    parser.add_argument(
+        "--scan",
+        metavar="ROOT",
+        help="search ROOT now exactly as the explorer does, and report how "
+             "many samples it finds, in which top-level folders, which "
+             "folders could not be read, and (with --find) whether a given "
+             "sample is found. Can take minutes on a large share.",
+    )
+    parser.add_argument(
+        "--find",
+        metavar="PATH",
+        help="with --scan: a sample (or any folder below one) to look for",
+    )
     return parser.parse_args(argv)
+
+
+def scan_command(root, find=None) -> int:
+    """--scan: the explorer's search of ROOT, run now, with a report."""
+    from .core.dataset_index import scan_report
+
+    root_path = Path(root).expanduser()
+    if not root_path.is_dir():
+        print(f"{root_path}: not a folder, or not reachable (unmounted share?)")
+        return 2
+    print(f"Searching {root_path} as the explorer does (Ctrl+C to stop)...")
+
+    def progress(count, last):
+        sys.stderr.write(f"\r  {count:,} samples so far ... {last[-60:]:<60}")
+        sys.stderr.flush()
+
+    try:
+        scan_report(root_path, find=find, progress=progress)
+    except KeyboardInterrupt:
+        sys.stderr.write("\n")
+        print("Stopped.")
+        return 130
+    sys.stderr.write("\n")
+    return 0
 
 
 def explain_dataset(target, root=None) -> int:
@@ -1136,6 +1173,8 @@ def main() -> int:
         return check_datasets(args.check)
     if args.why:
         return explain_dataset(args.why, args.root)
+    if args.scan:
+        return scan_command(args.scan, args.find)
     if args.version:
         # Deliberately no QApplication here: this must work even on a
         # machine with no display at all, e.g. over SSH, purely to answer

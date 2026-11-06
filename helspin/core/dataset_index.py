@@ -54,6 +54,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..domain.paths import holds_experiments as is_sample_dir
+from ..domain.paths import is_number_name
 
 # 2: expno entries gained structural flags and cached metadata. An older
 # cache is simply ignored and rebuilt -- it holds nothing worth migrating.
@@ -312,6 +313,13 @@ class RootIndex:
     truncated: bool = False
     # The sample limit a truncated search stopped at (0: not recorded).
     limit: int = 0
+    # Folders the last search could not read: [[path, error], ...].
+    problems: list = field(default_factory=list)
+    # The last sample an unfinished search reached. The next search resumes
+    # AFTER it instead of starting again from the top: a volume too big to
+    # search in one sitting used to restart every session and so never
+    # reached its last folders (by name: the newest year).
+    resume_after: str = ""
     # False while discovery is still running (or was interrupted). A partial
     # index is still worth caching: showing 300 known samples instantly and
     # finding the rest in the background beats showing nothing.
@@ -352,6 +360,8 @@ class RootIndex:
             "built_at": self.built_at,
             "truncated": self.truncated,
             "limit": self.limit,
+            "problems": [list(p) for p in self.problems],
+            "resume_after": self.resume_after,
             "complete": self.complete,
             "samples": [
                 {
@@ -374,6 +384,8 @@ class RootIndex:
                 built_at=float(data.get("built_at", 0.0)),
                 truncated=bool(data.get("truncated", False)),
                 limit=int(data.get("limit", 0) or 0),
+                problems=[tuple(p) for p in data.get("problems", [])][:MAX_PROBLEMS],
+                resume_after=str(data.get("resume_after", "") or ""),
                 complete=bool(data.get("complete", True))
                 and int(data.get("rule", 1)) >= DISCOVERY_RULE,
                 samples=[
@@ -418,7 +430,7 @@ def scan_expnos(sample_dir: str) -> list[ExpnoEntry]:
             # consistent answer.
             candidates = [
                 e for e in entries
-                if e.name.isdigit() and e.is_dir()
+                if is_number_name(e.name) and e.is_dir()
             ]
     except OSError:
         return out
@@ -495,7 +507,7 @@ def inspect_processed(expno_dir, procno: int = 1):
     try:
         with os.scandir(pdata) as entries:
             candidates = sorted(
-                (e for e in entries if e.name.isdigit() and e.is_dir()),
+                (e for e in entries if is_number_name(e.name) and e.is_dir()),
                 key=lambda e: int(e.name),
             )
     except FileNotFoundError:
@@ -589,27 +601,50 @@ def _link_identity(entry):
         return None
 
 
-def _sub_directories(directory: str):
+# Folders a search could not read, kept with the index and shown by
+# `helspin --why` / `--scan`. Capped: a volume full of them says enough at 200.
+MAX_PROBLEMS = 200
+
+
+def _note(problems, path, error) -> None:
+    if problems is not None and len(problems) < MAX_PROBLEMS:
+        problems.append((str(path), f"{type(error).__name__}: {error}"))
+
+
+def _sub_directories(directory: str, problems=None):
     """Child directories of ``directory``, symlinks included, sorted by name.
 
     Symlinks ARE followed. On Linux and macOS a data root very often holds
     symlinks to the real spectrometer mounts -- ``spect600 ->
     /mnt/raw/spect600`` -- and skipping them made an entire instrument's data
     silently invisible in the browser, with no error and no dimmed row to
-    suggest anything had been missed. Windows sees this far less often, which
-    is why it went unnoticed.
+    suggest anything had been missed.
 
-    An unreadable directory yields nothing rather than raising: one
-    permission-denied subtree must not abort a scan of the whole share.
+    Errors are handled ONE ENTRY at a time. Until 0.9.20 a single entry
+    whose type could not be read (a link into a folder without permission,
+    a file the share would not stat) made this return NOTHING for the whole
+    folder -- silently dropping every sample below it, on exactly the large
+    shared volumes where some such entry is almost certain. A listing that
+    fails outright is retried once (shares hiccup), then whatever was read
+    is kept and the failure recorded in ``problems``.
     """
-    try:
-        with os.scandir(directory) as entries:
-            return sorted(
-                (e for e in entries if e.is_dir()),
-                key=lambda e: e.name,
-            )
-    except OSError:
-        return []
+    found = []
+    for attempt in (1, 2):
+        found = []
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir():
+                            found.append(entry)
+                    except OSError as exc:
+                        _note(problems, entry.path, exc)
+        except OSError as exc:
+            if attempt == 2:
+                _note(problems, directory, exc)
+            continue
+        break
+    return sorted(found, key=lambda e: e.name)
 
 
 def _has_integer_child_dir(path: str) -> bool:
@@ -625,6 +660,8 @@ def discover_samples(
     depth: int = MAX_DEPTH,
     batch_size: int = DISCOVER_BATCH,
     workers: int = 1,
+    problems: list | None = None,
+    resume_after: str | None = None,
 ) -> tuple[list[str], bool]:
     """Find sample directories under ``root``. Returns (paths, truncated).
 
@@ -638,6 +675,17 @@ def discover_samples(
     walk never descends into one. With ``workers`` > 1 the sample checks of
     one directory's children run concurrently; results are still reported
     in the same sorted, depth-first order as a serial walk.
+
+    Nothing about one folder can stop the search of the others: unreadable
+    folders and entries are skipped and, if ``problems`` is given, recorded
+    there as (path, error). (Until 0.9.20 one odd entry could raise and end
+    the whole search, so everything after it in name order -- on a volume,
+    the newest year -- was never reached.)
+
+    ``resume_after`` (a sample path found by an earlier, unfinished search)
+    skips everything up to and including it, in the same order: folders
+    wholly before it are not even listed, and only its ancestors are walked
+    through. The result is the tail a full search would have produced.
     """
     root = str(root)
     found: list[str] = []
@@ -677,14 +725,26 @@ def discover_samples(
     # one chunk rather than after a directory of ten thousand children.
     chunk = max(1, workers * 4)
 
+    def check(path: str) -> bool:
+        try:
+            return is_sample_dir(path)
+        except Exception as exc:      # noqa: BLE001 -- one folder, not the search
+            _note(problems, path, exc)
+            return False
+
     def candidates(directory: str) -> list:
         out = []
-        for child in _sub_directories(directory):
+        for child in _sub_directories(directory, problems):
             if child.name == "pdata":
                 continue
+            try:
+                is_link = child.is_symlink()
+            except OSError as exc:
+                _note(problems, child.path, exc)
+                is_link = False
             # is_symlink() is free -- it comes from the directory read. Only
             # inside this branch is a stat paid for.
-            if child.is_symlink():
+            if is_link:
                 identity = _link_identity(child)
                 if identity is None:
                     continue        # broken link: nothing to descend into
@@ -704,23 +764,45 @@ def discover_samples(
             out.append(child)
         return out
 
-    def walk(directory: str, remaining: int) -> bool:
+    resume: tuple | None = None
+    if resume_after:
+        try:
+            resume = Path(resume_after).relative_to(root).parts or None
+        except ValueError:
+            resume = None           # not below this root: search it all
+
+    def walk(directory: str, remaining: int, parts: tuple = ()) -> bool:
         """False means: stop the whole walk (limit reached or cancelled)."""
         if remaining < 0:
             return True
         if stopped():
             return False
         children = candidates(directory)
+        through = None              # an ancestor of the resume point
+        if resume is not None:
+            todo = []
+            for child in children:
+                here = parts + (child.name,)
+                head = resume[:len(here)]
+                if here < head:
+                    continue        # searched in an earlier session
+                if here == head:
+                    if len(here) < len(resume):
+                        through = child  # walk through it, no sample check
+                    continue        # (or it IS the resume point: known)
+                todo.append(child)
+            children = todo
+            if through is not None and not walk(
+                    through.path, remaining - 1, parts + (through.name,)):
+                return False
         for start in range(0, len(children), chunk):
             if stopped():
                 return False
             part = children[start:start + chunk]
             if pool is not None and len(part) > 1:
-                verdicts = list(pool.map(
-                    is_sample_dir, [c.path for c in part]
-                ))
+                verdicts = list(pool.map(check, [c.path for c in part]))
             else:
-                verdicts = [is_sample_dir(c.path) for c in part]
+                verdicts = [check(c.path) for c in part]
             for child, is_sample in zip(part, verdicts, strict=True):
                 if len(found) >= limit:
                     return False
@@ -729,12 +811,16 @@ def discover_samples(
                 if is_sample:
                     emit(child.path)
                     continue    # a sample is a leaf for this purpose
-                if not walk(child.path, remaining - 1):
-                    return False
+                try:
+                    if not walk(child.path, remaining - 1,
+                                parts + (child.name,)):
+                        return False
+                except Exception as exc:  # noqa: BLE001 -- skip it, go on
+                    _note(problems, child.path, exc)
         return True
 
     try:
-        if is_sample_dir(root):
+        if check(root):
             emit(root)
             flush()
             return found, False
@@ -818,6 +904,27 @@ def explain_path(root, target) -> list[str]:
         if not folder.is_dir():
             lines.append(f"  {shown}: not a folder, or not readable.")
             break
+        # What the SEARCH sees: its own listing of the parent. A folder can
+        # exist and still be missing from it (an unreadable sibling entry
+        # used to empty the whole listing).
+        problems: list = []
+        listed = {c.name for c in _sub_directories(str(current), problems)}
+        if part not in listed:
+            lines.append(f"  {shown}: NOT IN THE SEARCH'S LISTING of "
+                         f"{current.name or current} -- the search never sees it.")
+            lines.extend(f"    problem: {p} -- {e}" for p, e in problems[:10])
+            break
+        if folder.is_symlink() and not (
+                os.path.realpath(folder) == root_real
+                or os.path.realpath(folder).startswith(root_real + os.sep)):
+            try:
+                os.stat(folder)
+                lines.append(f"  {shown}: a link to {os.path.realpath(folder)} "
+                             "(followed).")
+            except OSError as exc:
+                lines.append(f"  {shown}: a link whose target cannot be read "
+                             f"({exc}); the search skips it.")
+                break
         if folder.is_symlink():
             try:
                 real = os.path.realpath(folder)
@@ -833,7 +940,7 @@ def explain_path(root, target) -> list[str]:
             lines.append(f"  {shown}: SAMPLE -- found (experiments "
                          f"{', '.join(numbers[:8])}"
                          f"{', ...' if len(numbers) > 8 else ''}).")
-            if level < len(parts) and not parts[level].isdigit():
+            if level < len(parts) and not is_number_name(parts[level]):
                 lines.append(f"  The search does not look inside a sample, so "
                              f"'{parts[level]}' below it is never reached.")
             return lines
@@ -870,9 +977,66 @@ def explain_cache(root, target) -> str:
     if not index.complete:
         extra += (" It is incomplete or from an older HelSpin, so the next "
                   "start searches this root again by itself.")
+    if index.problems:
+        extra += (f" {len(index.problems)} folder(s) could not be read in that "
+                  "search, e.g.: " + "; ".join(
+                      f"{p} ({e})" for p, e in index.problems[:3]))
     return ("In the cached index: NO. The explorer shows this root from its "
             f"last search ({when}); press Refresh (F5) to search again."
             + extra)
+
+
+def scan_report(root, find=None, out=print, progress=None) -> int:
+    """Run the explorer's own search of ``root`` now and report on it.
+
+    The same function, limit and parallelism as the application -- not a
+    re-implementation -- so what this finds is exactly what the explorer
+    would find. ``find`` (any path below a sample) is looked for among the
+    results. Returns the number of samples found.
+    """
+    root = Path(root).expanduser()
+    problems: list = []
+    started = time.monotonic()
+    count = [0]
+
+    def on_batch(found):
+        count[0] += len(found)
+        if progress is not None:
+            progress(count[0], found[-1])
+
+    paths, truncated = discover_samples(
+        root, limit=SAMPLE_LIMIT, on_batch=on_batch,
+        workers=DISCOVER_WORKERS, problems=problems,
+    )
+    took = time.monotonic() - started
+    out(f"Searched {root} in {took:.0f} s: {len(paths):,} samples"
+        + (f" -- STOPPED at the {SAMPLE_LIMIT:,}-sample limit" if truncated else "")
+        + ".")
+    by_top: dict = {}
+    for path in paths:
+        try:
+            top = Path(path).relative_to(root).parts[0]
+        except (ValueError, IndexError):
+            top = "."
+        by_top[top] = by_top.get(top, 0) + 1
+    if by_top:
+        out("Samples per top-level folder:")
+        for top in sorted(by_top):
+            out(f"  {top}: {by_top[top]:,}")
+    if problems:
+        out(f"{len(problems)} folder(s) or entries could not be read "
+            "(skipped):")
+        for path, error in problems[:30]:
+            out(f"  {path} -- {error}")
+    else:
+        out("Every folder could be read.")
+    if find is not None:
+        target = str(Path(find).expanduser())
+        hit = next((p for p in paths
+                    if target == p or target.startswith(p + os.sep)), None)
+        out(f"{find}: " + (f"FOUND as sample {hit}" if hit else
+                            "NOT found by this search."))
+    return len(paths)
 
 
 # --- on-disk cache -----------------------------------------------------------
