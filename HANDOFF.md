@@ -25,7 +25,7 @@ conda create -n helspin python=3.11 && conda activate helspin
 pip install -e ".[dev]"
 helspin              # launch
 helspin --version    # prints version, needs no display
-pytest               # 1492 tests
+pytest               # 1511 tests
 ```
 
 **Version discipline:** `pyproject.toml` is the single source of truth.

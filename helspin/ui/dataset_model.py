@@ -53,6 +53,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QBrush, QColor
 
 from ..core import dataset_index as index_store
+from ..domain.acquisition import aq_seconds, as_ms_text, t1max_of
 from ..domain.paths import expnos_with_data
 from ..domain.ports import DataRoot, DatasetInfo
 from ..domain.project import Dimensionality
@@ -60,8 +61,15 @@ from ..infrastructure.nmrglue_reader import NmrglueReader
 
 MIME_DATASET = "application/x-helspin-dataset"
 
-COLUMNS = ("Name", "PULPROG", "Nucleus", "Dim", "Date")
-COL_NAME, COL_PULPROG, COL_NUCLEUS, COL_DIM, COL_DATE = range(5)
+COLUMNS = ("Name", "PULPROG", "Nucleus", "Dim", "Date", "AQ (ms)", "t1max (ms)")
+COL_NAME, COL_PULPROG, COL_NUCLEUS, COL_DIM, COL_DATE, COL_AQ, COL_T1MAX = range(7)
+COLUMN_TIPS = {
+    COL_AQ: "Acquisition time of the directly detected dimension:\n"
+            "AQ = TD / (2 SW_h), from acqus. For a 2D this is t2max.",
+    COL_T1MAX: "Maximum evolution time of the indirect dimension of a 2D:\n"
+               "t1max = TD1 / (2 SW_h1) (complex F1; TD1 / SW_h1 for QF),\n"
+               "from acqu2s. Empty for 1D and for pseudo-2D series.",
+}
 
 PENDING_TEXT = "\u2026"      # horizontal ellipsis: "being read"
 FAILED_TEXT = "\u2014"       # em dash: "was read, nothing there"
@@ -682,13 +690,7 @@ class DatasetTreeModel(QAbstractItemModel):
         for expno in expnos:
             old = previous.get(expno.name)
             if old is not None and old.meta and not expno.meta:
-                expno.meta = True
-                expno.pulprog = old.pulprog
-                expno.nucleus = old.nucleus
-                expno.solvent = old.solvent
-                expno.date = old.date
-                expno.dim = old.dim
-                expno.error = old.error
+                index_store.carry_meta(expno, old)
                 # A processed state is carried only once it is True:
                 # processed data does not become unprocessed, while "not
                 # processed yet" is exactly what changes without touching the
@@ -1013,6 +1015,7 @@ class DatasetTreeModel(QAbstractItemModel):
             entry.solvent = info.solvent or ""
             entry.date = info.date or ""
             entry.dim = 2 if info.dimensionality is Dimensionality.TWO_D else 1
+            entry.aq, entry.t1max = acquisition_times(info, node.path)
         self._invalidate_sample_haystack(node)
         root = _root_node(node)
         if root is not node:
@@ -1130,6 +1133,10 @@ class DatasetTreeModel(QAbstractItemModel):
             if node.kind is NodeKind.EXPNO and not node.loadable:
                 return node.load_note()
 
+        if (role == Qt.TextAlignmentRole and node.kind is NodeKind.EXPNO
+                and col in (COL_AQ, COL_T1MAX)):
+            return int(Qt.AlignRight | Qt.AlignVCenter)
+
         if role == Qt.ForegroundRole and node.kind is NodeKind.EXPNO:
             if node.failed or not node.loadable:
                 # Dimmed rather than hidden: an experiment that exists but has
@@ -1171,11 +1178,20 @@ class DatasetTreeModel(QAbstractItemModel):
             return f"{dim}D" if dim else None
         if col == COL_DATE:
             return node.meta_date()
+        if col == COL_AQ:
+            return as_ms_text(getattr(node.entry, "aq", 0.0))
+        if col == COL_T1MAX:
+            return as_ms_text(getattr(node.entry, "t1max", 0.0))
         return None
 
     def headerData(self, section: int, orientation, role: int = Qt.DisplayRole):
         if orientation == Qt.Horizontal and role == Qt.DisplayRole:
             return COLUMNS[section]
+        if orientation == Qt.Horizontal and role == Qt.ToolTipRole:
+            return COLUMN_TIPS.get(section)
+        if (orientation == Qt.Horizontal and role == Qt.TextAlignmentRole
+                and section in (COL_AQ, COL_T1MAX)):
+            return int(Qt.AlignRight | Qt.AlignVCenter)
         return None
 
     def flags(self, index: QModelIndex) -> Qt.ItemFlags:
@@ -1289,9 +1305,22 @@ def _write_meta(entry, values: dict) -> None:
     entry.date = values.get("date", "")
     entry.dim = int(values.get("dim", 0) or 0)
     entry.error = values.get("error", "")
+    entry.aq = float(values.get("aq", 0.0) or 0.0)
+    entry.t1max = float(values.get("t1max", 0.0) or 0.0)
     if "has_processed" in values:
         entry.has_processed = values["has_processed"]
         entry.processed_note = values.get("processed_note", "")
+
+
+def acquisition_times(info, path) -> tuple[float, float]:
+    """(AQ, t1max) in seconds for a probed experiment. AQ comes from the
+    acqus already read; t1max costs one more small read (acqu2s), for 2D
+    rows only."""
+    aq = aq_seconds(getattr(info, "acqus", None) or {})
+    t1max = 0.0
+    if info.dimensionality is Dimensionality.TWO_D:
+        t1max = t1max_of(path)
+    return aq, t1max
 
 
 def meta_values(reader, path, entry, data_root) -> dict:
@@ -1301,6 +1330,7 @@ def meta_values(reader, path, entry, data_root) -> dict:
     if info is None:
         return {"error": error or "could not read",
                 "has_processed": processed, "processed_note": note}
+    aq, t1max = acquisition_times(info, path)
     return {
         "has_processed": processed,
         "processed_note": note,
@@ -1309,6 +1339,8 @@ def meta_values(reader, path, entry, data_root) -> dict:
         "solvent": info.solvent or "",
         "date": info.date or "",
         "dim": 2 if info.dimensionality is Dimensionality.TWO_D else 1,
+        "aq": aq,
+        "t1max": t1max,
         "error": "",
     }
 

@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.27 - 2026-11-06 (test build -- not published until confirmed)
+
+### Added: AQ and t1max columns in the explorer
+
+For comparing experiments at a glance:
+
+- **AQ (ms)** -- acquisition time of the directly detected dimension (t2max
+  for a 2D): TD / (2 SW_h), from acqus.
+- **t1max (ms)** -- maximum evolution time of a 2D's indirect dimension:
+  TD1 / (2 SW_h1) for complex F1 acquisition (FnMODE QSEQ, TPPI, States,
+  States-TPPI, echo-antiecho), TD1 / SW_h1 for QF; empty for 1D and for
+  pseudo-2D series (FnMODE undefined), where F1 is a list, not a time.
+
+Both are read with the other row details (AQ from the acqus already read;
+t1max costs one small extra read, for 2D rows only) and kept in the saved
+index. A saved index from an earlier version has no such values: its rows
+still appear at once, and their details are read once more in the
+background (at once for what is on screen) so the columns fill in.
+
+The fields carried from one listing of a sample to the next are now kept in
+one list (`carry_meta`) instead of two hand-written copies.
+
+1511 tests (up from 1492).
+
 ## 0.9.26 - 2026-11-06 (test build -- not published until confirmed)
 
 ### No failure mark outlives a success -- audit of every failure state

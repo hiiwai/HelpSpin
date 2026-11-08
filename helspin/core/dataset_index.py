@@ -152,6 +152,8 @@ class ExpnoEntry:
     date: str = ""
     dim: int = 0        # 0 unknown, 1, 2, 3+ (3+ is listed but not loadable)
     error: str = ""
+    aq: float = 0.0     # s, TD / (2 SW_h) of the direct dimension
+    t1max: float = 0.0  # s, indirect dimension of a 2D; 0 = not applicable
 
     @property
     def displayable(self) -> bool:
@@ -203,6 +205,7 @@ class ExpnoEntry:
         return [
             self.name, flags, self.pulprog, self.nucleus, self.solvent,
             self.date, self.dim, self.processed_note,
+            round(self.aq, 7), round(self.t1max, 7),
         ]
 
     @classmethod
@@ -217,14 +220,15 @@ class ExpnoEntry:
         if len(row) == 3 and isinstance(row[1], bool):
             return cls(name=name, has_acqus=bool(row[1]), has_pdata=bool(row[2]))
         flags = int(row[1]) if len(row) > 1 else 0
-        if len(row) >= 8 and 0 <= flags < len(_FLAG_BITS):
+        if len(row) >= 10 and 0 <= flags < len(_FLAG_BITS):
             # The common, current form, on the fast path: positional fields
             # and a pre-decoded flag tuple. Loading a 100,000-sample cache
             # builds a million of these, and the keyword form below took
             # three times as long.
             return cls(name, *_FLAG_BITS[flags], row[7] or "", row[2] or "",
                        row[3] or "", row[4] or "", row[5] or "",
-                       int(row[6] or 0), "")
+                       int(row[6] or 0), "", float(row[8] or 0.0),
+                       float(row[9] or 0.0))
         entry = cls(
             name=name,
             has_acqus=bool(flags & 1),
@@ -244,6 +248,10 @@ class ExpnoEntry:
             entry.dim = int(row[6] or 0)
         if len(row) >= 8:
             entry.processed_note = row[7] or ""
+        # Rows saved before 0.9.27 have no AQ / t1max: their details are read
+        # once more (in the background, and at once for what is on screen)
+        # rather than showing blank columns for ever.
+        entry.meta = False
         return entry
 
 
@@ -409,6 +417,18 @@ class RootIndex:
 
 
 # --- tier 2: one sample's experiments ----------------------------------------
+
+
+# What a metadata read produces, carried across re-listings in ONE place --
+# two hand-written copies of this list drifted apart once already.
+CARRIED_META = ("pulprog", "nucleus", "solvent", "date", "dim", "error", "aq", "t1max")
+
+
+def carry_meta(new, old) -> None:
+    """Give a freshly listed experiment the details already read for it."""
+    new.meta = True
+    for name in CARRIED_META:
+        setattr(new, name, getattr(old, name))
 
 
 def scan_expnos(sample_dir: str) -> list[ExpnoEntry]:
@@ -1311,13 +1331,7 @@ def refresh_sample(sample: SampleEntry) -> None:
     for entry in fresh:
         old = previous.get(entry.name)
         if old is not None and old.meta:
-            entry.meta = True
-            entry.pulprog = old.pulprog
-            entry.nucleus = old.nucleus
-            entry.solvent = old.solvent
-            entry.date = old.date
-            entry.dim = old.dim
-            entry.error = old.error
+            carry_meta(entry, old)
             # has_processed is deliberately NOT carried over. Processing an
             # experiment in TopSpin writes inside <expno>/pdata, which does
             # not touch the sample directory's mtime -- so if a refresh kept

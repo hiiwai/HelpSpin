@@ -32,11 +32,13 @@ from PySide6.QtWidgets import (
 from ..domain.ports import DataRoot
 from .dataset_filter import DatasetFilterProxy
 from .dataset_model import (
+    COL_AQ,
     COL_DATE,
     COL_DIM,
     COL_NAME,
     COL_NUCLEUS,
     COL_PULPROG,
+    COL_T1MAX,
     COLUMNS,
     MIME_DATASET,
     DatasetPopulator,
@@ -307,6 +309,8 @@ class DatasetBrowser(QWidget):
         header.resizeSection(COL_NUCLEUS, 60)
         header.resizeSection(COL_DIM, 45)
         header.resizeSection(COL_DATE, 100)
+        header.resizeSection(COL_AQ, 70)
+        header.resizeSection(COL_T1MAX, 80)
 
     def _on_current_row(self, current: QModelIndex, _previous) -> None:
         """Explain a dimmed row the moment it is selected.

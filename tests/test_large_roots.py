@@ -199,9 +199,15 @@ def test_every_flag_combination_survives_the_cache_round_trip():
 def test_older_row_forms_still_load():
     assert di.ExpnoEntry.from_row(["3", True, False]).has_acqus is True
     short = di.ExpnoEntry.from_row(["4", 2 | 64])
-    assert short.has_pdata and short.meta and short.pulprog == ""
+    # 0.9.27: rows saved without AQ / t1max keep what they had but are read
+    # again once (meta False), so the new columns fill in.
+    assert short.has_pdata and not short.meta and short.pulprog == ""
     seven = di.ExpnoEntry.from_row(["5", 2, "zg", "1H", "D2O", "d", 1])
     assert seven.pulprog == "zg" and seven.processed_note == ""
+    eight = di.ExpnoEntry.from_row(["6", 2 | 64, "zg", "1H", "D2O", "d", 1, ""])
+    assert eight.pulprog == "zg" and not eight.meta
+    ten = di.ExpnoEntry.from_row(["7", 2 | 64, "zg", "1H", "D2O", "d", 1, "", 1.36, 0.0])
+    assert ten.meta and ten.aq == 1.36 and ten.t1max == 0.0
 
 
 def test_entries_use_slots():

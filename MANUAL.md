@@ -1,6 +1,6 @@
 # HelSpin — User Manual
 
-Version 0.9.26
+Version 0.9.27
 
 Compare Bruker NMR spectra and build publication figures.
 
@@ -76,6 +76,12 @@ unreliable, so refreshing is explicit: right-click a node to refresh it, or
 samples, and also looks inside known samples — expanded or not — for new
 experiments and for experiments processed since they were last seen. That
 second part runs in the background ("Indexing in background…").
+
+The explorer's **AQ (ms)** column shows the acquisition time of the directly
+detected dimension, AQ = TD / (2 SW_h) (for a 2D, t2max); **t1max (ms)** shows
+the maximum evolution time of a 2D's indirect dimension, TD1 / (2 SW_h1) for
+complex F1 acquisition (TD1 / SW_h1 for QF), empty for 1D and pseudo-2D
+series. Hover over a column header for the definition.
 
 Opening a sample always checks its experiments against the disk: the rows
 appear at once from what HelSpin knew, then any experiment processed,

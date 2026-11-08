@@ -36,6 +36,7 @@ _ROW_KEYS = frozenset(
     {
         "NUC1", "SOLVENT", "PULPROG", "NS", "RG", "HOLDER", "DATE", "PARMODE",
         "USERA1", "USERA2", "USERA3", "USERA4", "USERA5", "INSTRUM", "PROBHD",
+        "TD", "SW_h",           # AQ = TD / (2 SW_h), shown in the explorer
     }
 )
 
