@@ -1918,11 +1918,10 @@ class DatasetPopulator(QObject):
             self._inflight.add(task)
             self._pool.start(task)
         elif node.kind is NodeKind.SAMPLE:
-            task = _DetailTask(node, self._token)
-            task.signals.done.connect(self._on_sample_refreshed)
-            task.signals.failed.connect(self._on_failed)
-            self._inflight.add(task)
-            self._pool.start(task)
+            # ONE pass: list the experiments and check each one's processed
+            # data. (Before 0.9.28 a refresh listed the sample, then the disk
+            # check listed it all again.)
+            self.verify_sample(node, force=True)
 
     def _populate_root(self, node: Node) -> None:
         cached = self._model.cached_index(node.path)
@@ -1992,6 +1991,7 @@ class DatasetPopulator(QObject):
         entry = self._model.entry_for(node)
         if entry is None:
             return
+        self._model.clear_failure(node)     # it was read: no longer failed
         self._model.merge_expnos(entry, expnos, str(node.path))
         reread = set()
         for expno in entry.expnos:

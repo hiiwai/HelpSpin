@@ -186,6 +186,8 @@ class MainWindow(QMainWindow):
         self._browser.sampleLimit.connect(self._on_sample_limit)
         self._sample_limit_warned: set = set()
         self._canvas.loadFailed.connect(self._on_load_failed)
+        self._canvas.reloadFailed.connect(self._on_reload_failed)
+        self._canvas.reloadFinished.connect(self._on_reload_finished)
         self._canvas.modeChanged.connect(self._on_mode_changed)
         self._canvas.dimensionalityRefused.connect(
             self._on_dimensionality_refused
@@ -261,7 +263,7 @@ class MainWindow(QMainWindow):
         toolbar.setObjectName("MainToolBar")
         toolbar.setMovable(False)
         toolbar.addAction("Add Data Root\u2026", self._add_data_root)
-        refresh_action = toolbar.addAction("Refresh All", self._browser.refresh_all)
+        refresh_action = toolbar.addAction("Refresh All", self._refresh_all)
         self._detach_action = toolbar.addAction(
             "Detach Explorer", self._toggle_browser_window
         )
@@ -351,7 +353,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction("&Save Session…", self._save_session).setShortcut("Ctrl+S")
         file_menu.addAction("&Open Session…", self._open_session).setShortcut("Ctrl+O")
-        file_menu.addAction("&Refresh All", self._browser.refresh_all).setShortcut("F5")
+        file_menu.addAction("&Refresh All", self._refresh_all).setShortcut("F5")
         file_menu.addAction("&Clear Canvas", self._clear_canvas)
         file_menu.addSeparator()
         file_menu.addAction("&CEST…", self._show_cest)
@@ -842,6 +844,41 @@ class MainWindow(QMainWindow):
         self._spectrum_list.set_traces(
             self._canvas.traces, self._canvas.selected_index()
         )
+
+    def _refresh_all(self) -> None:
+        """Refresh All: the explorer AND the plot.
+
+        The explorer re-checks its data roots and open samples; every plotted
+        spectrum whose processed files changed on disk (reprocessed in
+        TopSpin, or copied in again) is re-read and replaced in place. Only
+        what is plotted is checked -- a few stats each -- so this stays quick
+        however much data the explorer holds.
+        """
+        self._browser.refresh_all()
+        if self._canvas.reload_plotted():
+            self.statusBar().showMessage(
+                "Refreshing: checking plotted spectra for new processed data\u2026",
+                5000)
+
+    def _on_reload_finished(self, reloaded: int, unchanged: int, failed: int) -> None:
+        parts = []
+        if reloaded:
+            parts.append(f"{reloaded} plotted spectr{'um' if reloaded == 1 else 'a'} "
+                         "updated with new processed data")
+        if unchanged and not reloaded:
+            parts.append("plotted spectra are up to date")
+        if failed:
+            parts.append(f"{failed} could not be re-read (old data kept)")
+        if parts:
+            text = "; ".join(parts)
+            self.statusBar().showMessage(text[0].upper() + text[1:] + ".", 10000)
+
+    def _on_reload_failed(self, path: str, message: str) -> None:
+        name = Path(path).name
+        sample = Path(path).parent.name
+        self.statusBar().showMessage(
+            f"Could not re-read {sample}/{name} (still showing the earlier "
+            f"data): {message}", 15000)
 
     def _on_load_failed(self, path: str, message: str) -> None:
         """A drop that could not be loaded must leave a visible trace.

@@ -25,7 +25,7 @@ conda create -n helspin python=3.11 && conda activate helspin
 pip install -e ".[dev]"
 helspin              # launch
 helspin --version    # prints version, needs no display
-pytest               # 1511 tests
+pytest               # 1518 tests
 ```
 
 **Version discipline:** `pyproject.toml` is the single source of truth.
@@ -163,6 +163,13 @@ a local disk hides everything.
    must not drop rows. Without this, a volume needing more than one session
    to search restarted from the top every time and never reached its last
    folders.
+9g. **Refresh All refreshes the PLOT too** (0.9.28): `MainWindow._refresh_all`
+   = explorer refresh + `SpectrumCanvas.reload_plotted()`. Each trace keeps
+   `source_stamp` (size/mtime of 1r/2rr/procs/proc2s at load); only a trace
+   whose stamp changed is re-read, replaced IN PLACE (`_replace_data`, style
+   kept). A failed re-read keeps the old data and emits `reloadFailed`, never
+   `loadFailed` (which would grey the explorer row). Dropping a plotted
+   experiment again = reload of that one. tests/test_refresh_reloads_plot.py.
 9f. **No failure mark outlives a success** (0.9.25/0.9.26). Every place that
    sets `.failed = True` (now 3: `_on_failed`, `mark_expno_failed`, the
    synchronous fetchMore) has a success path that clears it

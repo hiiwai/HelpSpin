@@ -189,7 +189,30 @@ class Trace:
         return name
 
 
+# The processed files a plotted spectrum is read from. Their (size, mtime)
+# at load time is kept with the trace; Refresh All re-reads a trace only when
+# they differ -- i.e. when TopSpin (or a copy) has rewritten the spectrum.
+STAMP_FILES = ("1r", "2rr", "procs", "proc2s")
+
+
+def processed_stamp(path, procno: int = 1) -> tuple:
+    """(name, mtime_ns, size) of the processed files of an experiment.
+    WORKER-SAFE; a handful of stats, no reads."""
+    pdata = Path(path) / "pdata" / str(procno)
+    out = []
+    for name in STAMP_FILES:
+        try:
+            st = (pdata / name).stat()
+        except OSError:
+            continue
+        out.append((name, st.st_mtime_ns, st.st_size))
+    return tuple(out)
+
+
 class _LoadSignals(QObject):
+    # path, stamp of its processed files -- emitted BEFORE loaded/loaded2d
+    stamped = Signal(object, object)
+    unchanged = Signal(object)                    # path: a reload found no change
     loaded = Signal(object, object, object, str, object)
     # path, ppm, intensity, label, (ns, rg) -- the acquisition
     # parameters have to cross with the data or they are lost: the
@@ -217,8 +240,15 @@ class _LoadTask(QRunnable):
     The result is handed back by signal and applied on the GUI thread.
     """
 
-    def __init__(self, reader, path: Path, label: str, dimensionality: int):
+    def __init__(self, reader, path: Path, label: str, dimensionality: int,
+                 reload_from=None):
         super().__init__()
+        # reload_from: the stamp the plotted copy was read with. If the files
+        # still match it, nothing is read again (``unchanged``). None means
+        # "not a reload" -- or a reload whose old stamp is unknown, which then
+        # always reads.
+        self._reload = reload_from is not None
+        self._old_stamp = reload_from
         # The canvas holds this task in _inflight until its result arrives.
         # Qt's default is to delete a QRunnable the moment run() returns, so
         # that reference would then point at freed memory and dropping it
@@ -233,6 +263,13 @@ class _LoadTask(QRunnable):
 
     def run(self) -> None:
         try:
+            # Stamp BEFORE reading: if TopSpin rewrites the files while they
+            # are read, the next Refresh sees a newer stamp and reads again.
+            stamp = processed_stamp(self._path)
+            if self._reload and self._old_stamp and stamp == self._old_stamp:
+                self.signals.unchanged.emit(self._path)
+                return
+            self.signals.stamped.emit(self._path, stamp)
             dim = self._dim
             if dim not in (1, 2):
                 # 0 means the browser row was dropped before anything had
@@ -328,6 +365,9 @@ class SpectrumCanvas(QWidget):
 
     spectrumAdded = Signal(str)      # label
     loadFailed = Signal(str, str)    # path, message
+    # Refresh: plotted spectra re-read because their processed files changed.
+    reloadFailed = Signal(str, str)              # path, message (old data kept)
+    reloadFinished = Signal(int, int, int)       # reloaded, unchanged, failed
     tracesChanged = Signal()
     cursorMoved = Signal(float, float)    # ppm, intensity under the cursor
     imageSaved = Signal(str)              # path written
@@ -446,6 +486,9 @@ class SpectrumCanvas(QWidget):
         self._label_artists = []
         self._label_drag = None
         self._pending_meta = {}
+        self._stamps: dict = {}          # path -> stamp, between stamped and loaded
+        self._reloading: set = set()     # paths being re-read for a refresh
+        self._reload_counts = [0, 0, 0]  # reloaded, unchanged, failed
         self._f1_range = None
         self._f2_range = None
         self._last_mode = "1D"
@@ -1316,7 +1359,11 @@ class SpectrumCanvas(QWidget):
         """Queue one dataset for loading and drawing."""
         path = Path(path)
         if any(t.path == path for t in self._traces):
-            return   # already shown; dropping twice is a no-op, not a duplicate
+            # Already shown: not a duplicate -- but re-read it if TopSpin has
+            # rewritten it since (it used to be ignored, so a reprocessed
+            # spectrum could not be brought in without removing it first).
+            self.reload_plotted([path])
+            return
 
         # Mixing dimensionalities in one figure is refused with an explicit
         # message. A 2D contour map and a 1D trace share no meaningful vertical
@@ -1356,6 +1403,7 @@ class SpectrumCanvas(QWidget):
             "position": position,
         }
         task = _LoadTask(self._reader, path, label, dimensionality)
+        task.signals.stamped.connect(self._on_stamped)
         task.signals.loaded.connect(self._on_loaded)
         task.signals.loaded2d.connect(self._on_loaded_2d)
         task.signals.failed.connect(self._on_failed)
@@ -1363,6 +1411,67 @@ class SpectrumCanvas(QWidget):
         # and losing it mid-flight would silently discard the result.
         self._inflight.add(task)
         self._pool.start(task)
+
+    # -- reloading -------------------------------------------------------------
+
+    def reload_plotted(self, paths=None) -> int:
+        """Re-read plotted spectra whose processed files changed on disk.
+
+        Refresh All calls this for every plotted spectrum (``paths`` None).
+        Each check is a few stats on a worker; only a spectrum whose 1r/2rr
+        or procs changed (TopSpin reprocessed it, a copy brought a new one)
+        is read again. Its data are replaced IN PLACE: colour, scale,
+        offsets, visibility, label and the view stay as they were.
+        Returns how many checks were started; reloadFinished reports the
+        outcome when the last one is done.
+        """
+        wanted = None if paths is None else {Path(p) for p in paths}
+        started = 0
+        for trace in self._traces:
+            if wanted is not None and trace.path not in wanted:
+                continue
+            if trace.path in self._reloading:
+                continue
+            old = getattr(trace, "source_stamp", None)
+            task = _LoadTask(self._reader, trace.path, trace.label,
+                             2 if trace.is_2d else 1, reload_from=old or ())
+            task.signals.stamped.connect(self._on_stamped)
+            task.signals.unchanged.connect(self._on_unchanged)
+            task.signals.loaded.connect(self._on_loaded)
+            task.signals.loaded2d.connect(self._on_loaded_2d)
+            task.signals.failed.connect(self._on_failed)
+            self._reloading.add(trace.path)
+            self._inflight.add(task)
+            self._pool.start(task)
+            started += 1
+        return started
+
+    def _on_stamped(self, path, stamp) -> None:
+        self._stamps[Path(path)] = stamp
+
+    def _reload_done(self, path, outcome: int) -> None:
+        self._reloading.discard(path)
+        self._reload_counts[outcome] += 1
+        if not self._reloading:
+            reloaded, unchanged, failed = self._reload_counts
+            self._reload_counts = [0, 0, 0]
+            self.reloadFinished.emit(reloaded, unchanged, failed)
+
+    def _on_unchanged(self, path) -> None:
+        path = Path(path)
+        self._inflight = {t for t in self._inflight if t._path != path}
+        self._reload_done(path, 1)
+
+    def _replace_data(self, path, **fields) -> None:
+        trace = next((t for t in self._traces if t.path == path), None)
+        if trace is not None:
+            for name, value in fields.items():
+                setattr(trace, name, value)
+            trace.source_stamp = self._stamps.pop(path, None)
+            self._stack_step = None      # lane spacing follows the data
+            self._redraw()
+            self.tracesChanged.emit()
+        self._reload_done(path, 0)
 
     def _insert_trace(self, trace, position: int) -> int:
         """Place a freshly loaded trace at the position it was DROPPED in.
@@ -1409,6 +1518,13 @@ class SpectrumCanvas(QWidget):
                    acquisition=None) -> None:
         path = Path(path)
         self._inflight = {t for t in self._inflight if t._path != path}
+        if path in self._reloading:
+            fields = {"ppm": ppm, "intensity": intensity}
+            if acquisition:
+                fields["ns"] = int(acquisition[0] or 0)
+                fields["rg"] = float(acquisition[1] or 0.0)
+            self._replace_data(path, **fields)
+            return
         if any(t.path == path for t in self._traces):
             return
         meta = self._pending_meta.pop(path, {})
@@ -1419,6 +1535,7 @@ class SpectrumCanvas(QWidget):
             color=slot["color"], line_width=slot["width"],
             line_style=slot["style"],
         )
+        trace.source_stamp = self._stamps.pop(path, None)
         index = self._insert_trace(trace, position)
         trace.pulse_program = meta.get("pulse_program", "")
         trace.nucleus = meta.get("nucleus", "")
@@ -1447,6 +1564,10 @@ class SpectrumCanvas(QWidget):
     def _on_loaded_2d(self, path, payload, label: str) -> None:
         path = Path(path)
         self._inflight = {t for t in self._inflight if t._path != path}
+        if path in self._reloading:
+            self._replace_data(path, matrix=payload["matrix"],
+                               ppm_f1=payload["ppm_f1"], ppm_f2=payload["ppm_f2"])
+            return
         if any(t.path == path for t in self._traces):
             return
         meta = self._pending_meta.pop(path, {})
@@ -1462,6 +1583,7 @@ class SpectrumCanvas(QWidget):
             ppm_f1=payload["ppm_f1"],
             ppm_f2=payload["ppm_f2"],
         )
+        trace.source_stamp = self._stamps.pop(path, None)
         index = self._insert_trace(trace, position)
         trace.pulse_program = meta.get("pulse_program", "")
         trace.nucleus = meta.get("nucleus", "")
@@ -1476,6 +1598,14 @@ class SpectrumCanvas(QWidget):
     def _on_failed(self, path, message: str) -> None:
         path = Path(path)
         self._inflight = {t for t in self._inflight if t._path != path}
+        self._stamps.pop(path, None)
+        if path in self._reloading:
+            # The plotted copy is still valid: keep it, say why the new one
+            # could not be read (TopSpin still writing it, say), and do not
+            # grey the explorer row -- the next Refresh simply tries again.
+            self.reloadFailed.emit(str(path), message)
+            self._reload_done(path, 2)
+            return
         # The metadata stashed for this drop must go too. Leaving it meant a
         # failed load kept an entry keyed on that path for the rest of the
         # session, and the next successful load of the SAME dataset picked up

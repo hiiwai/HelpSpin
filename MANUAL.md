@@ -1,6 +1,6 @@
 # HelSpin — User Manual
 
-Version 0.9.27
+Version 0.9.28
 
 Compare Bruker NMR spectra and build publication figures.
 
@@ -76,6 +76,13 @@ unreliable, so refreshing is explicit: right-click a node to refresh it, or
 samples, and also looks inside known samples — expanded or not — for new
 experiments and for experiments processed since they were last seen. That
 second part runs in the background ("Indexing in background…").
+
+**Refresh All** (toolbar, File menu, F5) refreshes the explorer *and* the
+plot: every plotted spectrum whose processed data changed on disk -- you
+reprocessed it in TopSpin, or copied a new version in -- is read again and
+replaced in place, keeping its colour, scale, offset and label. Unchanged
+spectra are not read again. Dropping a plotted experiment onto the plot again
+does the same for that one spectrum.
 
 The explorer's **AQ (ms)** column shows the acquisition time of the directly
 detected dimension, AQ = TD / (2 SW_h) (for a 2D, t2max); **t1max (ms)** shows

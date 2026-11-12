@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.9.28 - 2026-11-06 (test build -- not published until confirmed)
+
+### Fixed: Refresh All did not bring reprocessed data onto the plot
+
+Reported: a spectrum on the plot was reprocessed in TopSpin (new 2rr);
+Refresh All changed nothing on the plot. Refresh All only updated the
+explorer: a plotted spectrum was read once, when dropped, and dropping it
+again was silently ignored -- the only way to see the new data was to remove
+the spectrum and drag it in again.
+
+Now Refresh All also checks every PLOTTED spectrum (a few file-date checks
+each, on a worker thread) and re-reads only those whose processed files
+(1r/2rr, procs, proc2s) changed. The data are replaced in place: colour,
+scale, offsets, label, visibility and the current view stay. The status bar
+says how many were updated. If a re-read fails (TopSpin still writing), the
+earlier data stay on the plot, the reason is shown, and the explorer row is
+not greyed; the next Refresh tries again. Dropping a plotted experiment again
+re-reads it in the same way.
+
+### Faster: an open sample is listed once per refresh
+
+Refreshing an open sample listed it, and the disk check added in 0.9.23 then
+listed it again. It is now one pass.
+
+(0.9.27's AQ / t1max columns are included; 0.9.27 was not tested on its own.)
+
+1518 tests (up from 1511).
+
 ## 0.9.27 - 2026-11-06 (test build -- not published until confirmed)
 
 ### Added: AQ and t1max columns in the explorer
